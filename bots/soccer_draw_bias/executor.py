@@ -69,10 +69,11 @@ class DrawBiasExecutor:
         if best_ask is None:
             return ExecutionResult(success=False, reason="empty_asks")
 
-        if best_ask > self.config.target_max_buy_price:
+        max_buy = self.config.max_buy_for_score(match)
+        if best_ask > max_buy:
             logger.debug(
-                f"Match {match.match_id}: best ask {best_ask:.3f} > "
-                f"{self.config.target_max_buy_price:.3f} — wait"
+                f"Match {match.match_id} [{match.score_scenario}]: "
+                f"best ask {best_ask:.3f} > {max_buy:.3f} — wait"
             )
             return ExecutionResult(
                 success=False,
@@ -80,7 +81,7 @@ class DrawBiasExecutor:
                 reason="price_above_threshold",
             )
 
-        # Size: risk_unit / price (e.g. $15 / 0.15 = 100 shares)
+        # Size: risk_unit / price
         price = float(best_ask)
         shares = self.config.risk_unit_usd / price
         if best_ask_size > 0:

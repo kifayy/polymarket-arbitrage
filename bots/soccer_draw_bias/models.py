@@ -91,6 +91,26 @@ class MatchRecord:
     def favorite_losing(self) -> bool:
         return self.favorite_goals < self.underdog_goals
 
+    @property
+    def underdog_leading_by_one(self) -> bool:
+        """Underdog ahead by exactly one goal (e.g. favorite losing 0-1 or 1-2)."""
+        return self.underdog_goals - self.favorite_goals == 1
+
+    @property
+    def is_tradeable_score(self) -> bool:
+        """Tied, or underdog winning by exactly 1."""
+        return self.is_tied or self.underdog_leading_by_one
+
+    @property
+    def score_scenario(self) -> str:
+        if self.is_tied:
+            return "tied"
+        if self.underdog_leading_by_one:
+            return "underdog_plus_one"
+        if self.favorite_winning:
+            return "favorite_winning"
+        return "favorite_losing_big"
+
 
 @dataclass
 class LiveFixtureSnapshot:

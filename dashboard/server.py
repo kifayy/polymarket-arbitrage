@@ -114,7 +114,7 @@ def _default_bots() -> dict:
         "soccer_draw_bias": {
             "id": "soccer_draw_bias",
             "name": "Soccer Draw Bias",
-            "tagline": "Buy favorite No when tied late (75–88')",
+            "tagline": "Buy favorite No late — tied (≤20¢) or underdog +1 (≤10¢)",
             "venue": "Polymarket · Soccer",
             "enabled": True,
             "status": "idle",

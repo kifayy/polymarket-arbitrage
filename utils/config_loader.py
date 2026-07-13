@@ -47,11 +47,13 @@ class SoccerDrawBiasConfig:
     """90-minute draw-bias soccer strategy configuration."""
     enabled: bool = True
     league_ids: list[int] = field(default_factory=lambda: [39, 2, 140, 135, 78, 61, 253, 1, 3])
-    min_prematch_favorite_prob: float = 0.52
+    min_prematch_favorite_prob: float = 0.50
     min_market_volume: float = 5000.0
     min_match_similarity: float = 0.72
     active_window_start: int = 75
     active_window_end: int = 88
+    max_buy_tied: float = 0.20
+    max_buy_underdog_lead: float = 0.10
     target_max_buy_price: float = 0.20
     risk_unit_usd: float = 15.0
     poll_interval_idle_sec: float = 600.0

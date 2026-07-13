@@ -108,6 +108,14 @@ class TestStateMachine:
         )
         assert m.status == MatchStatus.ACTIVE_WINDOW
 
+    def test_75_underdog_plus_one_goes_active(self):
+        m = _match(status=MatchStatus.MONITORING, favorite_is_home=True)
+        self.sm.apply_live_update(
+            m, _snap(elapsed=76, status_short="2H", home_goals=0, away_goals=1)
+        )
+        assert m.status == MatchStatus.ACTIVE_WINDOW
+        assert m.score_scenario == "underdog_plus_one"
+
     def test_75_favorite_winning_discarded(self):
         m = _match(status=MatchStatus.MONITORING, favorite_is_home=True)
         self.sm.apply_live_update(
@@ -116,13 +124,19 @@ class TestStateMachine:
         assert m.status == MatchStatus.DISCARDED
         assert m.discard_reason == "favorite_winning"
 
-    def test_75_favorite_losing_discarded(self):
+    def test_75_favorite_losing_by_two_discarded(self):
         m = _match(status=MatchStatus.MONITORING, favorite_is_home=True)
         self.sm.apply_live_update(
-            m, _snap(elapsed=76, status_short="2H", home_goals=0, away_goals=1)
+            m, _snap(elapsed=76, status_short="2H", home_goals=0, away_goals=2)
         )
         assert m.status == MatchStatus.DISCARDED
-        assert m.discard_reason == "favorite_losing"
+        assert "losing" in m.discard_reason
+
+    def test_max_buy_tiers(self):
+        tied = _match(current_score=[1, 1], favorite_is_home=True)
+        dog = _match(current_score=[0, 1], favorite_is_home=True)
+        assert self.cfg.max_buy_for_score(tied) == self.cfg.max_buy_tied
+        assert self.cfg.max_buy_for_score(dog) == self.cfg.max_buy_underdog_lead
 
     def test_red_card_before_window_discarded(self):
         m = _match(status=MatchStatus.MONITORING)

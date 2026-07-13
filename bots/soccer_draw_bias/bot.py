@@ -55,7 +55,9 @@ class SoccerDrawBiasBot:
                 min_match_similarity=s.min_match_similarity,
                 active_window_start=s.active_window_start,
                 active_window_end=s.active_window_end,
-                target_max_buy_price=s.target_max_buy_price,
+                max_buy_tied=getattr(s, "max_buy_tied", 0.20),
+                max_buy_underdog_lead=getattr(s, "max_buy_underdog_lead", 0.10),
+                target_max_buy_price=getattr(s, "target_max_buy_price", 0.20),
                 risk_unit_usd=s.risk_unit_usd,
                 poll_interval_idle_sec=getattr(s, "poll_interval_idle_sec", 600.0),
                 poll_interval_monitoring_sec=s.poll_interval_monitoring_sec,
@@ -517,6 +519,6 @@ class SoccerDrawBiasBot:
         self._near_miss_log[match.match_id] = ask
         logger.info(
             f"NEAR MISS match={match.match_id} {match.home_team} vs {match.away_team} "
-            f"@ {match.current_minute}' score={match.current_score} "
-            f"ask={ask:.3f} > max={self.draw_config.target_max_buy_price:.3f}"
+            f"[{match.score_scenario}] @ {match.current_minute}' score={match.current_score} "
+            f"ask={ask:.3f} > max={self.draw_config.max_buy_for_score(match):.3f}"
         )

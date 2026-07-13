@@ -129,12 +129,15 @@ soccer_draw_bias:
   enabled: true
   # Preferred leagues (used for live polls). Discovery is markets-first.
   league_ids: [39, 2, 140, 135, 78, 61, 253, 1, 3]
-  min_prematch_favorite_prob: 0.52
+  min_prematch_favorite_prob: 0.50
   min_market_volume: 5000
   min_match_similarity: 0.72
   active_window_start: 75
   active_window_end: 88
-  target_max_buy_price: 0.20
+  # Tiered favorite-No max ask
+  max_buy_tied: 0.20              # score tied late
+  max_buy_underdog_lead: 0.10     # underdog winning by exactly 1
+  target_max_buy_price: 0.20      # alias / fallback
   risk_unit_usd: 15.0
   # Quota-safe polling (API-Football free ~100 req/day)
   poll_interval_idle_sec: 600          # only scheduled / nothing live

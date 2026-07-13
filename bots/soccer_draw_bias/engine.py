@@ -26,27 +26,34 @@ class DrawBiasConfig:
 
     enabled: bool = True
     league_ids: list[int] | None = None
-    min_prematch_favorite_prob: float = 0.52
+    min_prematch_favorite_prob: float = 0.50
     min_market_volume: float = 5000.0
     min_match_similarity: float = 0.72
     active_window_start: int = 75
     active_window_end: int = 88
+    # Tiered max ask for favorite No
+    max_buy_tied: float = 0.20
+    max_buy_underdog_lead: float = 0.10
+    # Back-compat alias used in a few call sites
     target_max_buy_price: float = 0.20
     risk_unit_usd: float = 15.0
-    poll_interval_idle_sec: float = 600.0  # only SCHEDULED / empty universe
-    poll_interval_monitoring_sec: float = 300.0  # live but before ~70'
-    poll_interval_near_window_sec: float = 90.0  # monitoring >= 70'
-    poll_interval_active_sec: float = 60.0  # ACTIVE_WINDOW / EXECUTED
+    poll_interval_idle_sec: float = 600.0
+    poll_interval_monitoring_sec: float = 300.0
+    poll_interval_near_window_sec: float = 90.0
+    poll_interval_active_sec: float = 60.0
     near_window_minute: int = 70
     db_path: str = "data/soccer_draw_bias.db"
     season: int | None = None
-    # If true, date discovery keeps any league that maps to Polymarket (more games)
     markets_first: bool = True
 
     def __post_init__(self) -> None:
         if self.league_ids is None:
-            # EPL, UCL, La Liga, Serie A, Bundesliga, Ligue 1, MLS, World Cup, UEL
             self.league_ids = [39, 2, 140, 135, 78, 61, 253, 1, 3]
+
+    def max_buy_for_score(self, match: MatchRecord) -> float:
+        if match.underdog_leading_by_one:
+            return self.max_buy_underdog_lead
+        return self.max_buy_tied
 
 
 class MatchStateMachine:
@@ -127,10 +134,12 @@ class MatchStateMachine:
             match.discard_reason = "favorite_red_card"
             return
 
-        if not match.is_tied:
+        if not match.is_tradeable_score:
             match.status = MatchStatus.DISCARDED
             match.discard_reason = (
-                "favorite_winning" if match.favorite_winning else "favorite_losing"
+                "favorite_winning"
+                if match.favorite_winning
+                else "favorite_losing_by_more_than_one"
             )
             logger.info(
                 f"Match {match.match_id} DISCARDED at {match.current_minute}': "
@@ -146,7 +155,7 @@ class MatchStateMachine:
         match.status = MatchStatus.ACTIVE_WINDOW
         logger.info(
             f"Match {match.match_id} → ACTIVE_WINDOW "
-            f"tied {match.current_score} @ {match.current_minute}'"
+            f"{match.score_scenario} {match.current_score} @ {match.current_minute}'"
         )
 
     def _apply_active_gates(
@@ -157,9 +166,9 @@ class MatchStateMachine:
             match.discard_reason = "favorite_red_card"
             return
 
-        if not match.is_tied:
+        if not match.is_tradeable_score:
             match.status = MatchStatus.DISCARDED
-            match.discard_reason = "score_no_longer_tied"
+            match.discard_reason = "score_no_longer_tradeable"
             return
 
         if match.current_minute > self.config.active_window_end:
@@ -168,11 +177,9 @@ class MatchStateMachine:
             return
 
         if trading_suspended:
-            # Stay in ACTIVE_WINDOW but executor will refuse
             return
 
         if match.var_in_progress:
-            # Pause — remain ACTIVE_WINDOW without executing
             return
 
     def should_evaluate_orderbook(self, match: MatchRecord) -> bool:
@@ -180,7 +187,7 @@ class MatchStateMachine:
             return False
         return (
             match.status == MatchStatus.ACTIVE_WINDOW
-            and match.is_tied
+            and match.is_tradeable_score
             and not match.var_in_progress
             and match.favorite_red_cards == 0
             and self.config.active_window_start
