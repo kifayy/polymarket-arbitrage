@@ -29,9 +29,35 @@ class ApiConfig:
     api_secret: str = ""
     passphrase: str = ""
     private_key: str = ""
+    funder_address: str = ""
+    signature_type: int = 0
+    relayer_api_key: str = ""
+    relayer_api_key_address: str = ""
+    kalshi_api_key_id: str = ""
+    kalshi_private_key: str = ""
+    kalshi_private_key_path: str = ""
+    api_football_key: str = ""
     timeout_seconds: float = 30.0
     max_retries: int = 3
     retry_delay_seconds: float = 1.0
+
+
+@dataclass
+class SoccerDrawBiasConfig:
+    """90-minute draw-bias soccer strategy configuration."""
+    enabled: bool = True
+    league_ids: list[int] = field(default_factory=lambda: [39, 2, 140, 135, 78, 61, 253, 1, 3])
+    min_prematch_favorite_prob: float = 0.55
+    min_market_volume: float = 10000.0
+    min_match_similarity: float = 0.72
+    active_window_start: int = 75
+    active_window_end: int = 88
+    target_max_buy_price: float = 0.15
+    risk_unit_usd: float = 15.0
+    poll_interval_monitoring_sec: float = 180.0
+    poll_interval_active_sec: float = 60.0
+    db_path: str = "data/soccer_draw_bias.db"
+    season: Optional[int] = None
 
 
 @dataclass
@@ -72,6 +98,7 @@ class ModeConfig:
     data_mode: str = "real"  # "real" or "simulation" - use simulation for demos
     cross_platform_enabled: bool = True  # Enable cross-platform arbitrage (Polymarket + Kalshi)
     kalshi_enabled: bool = True  # Enable Kalshi market monitoring
+    cross_platform_execution: bool = True  # Place both legs when opportunity found
     min_match_similarity: float = 0.6  # Minimum similarity score for market matching (0-1)
     dry_run_initial_balance: float = 10000.0
     simulate_fills: bool = True
@@ -109,6 +136,7 @@ class BotConfig:
     mode: ModeConfig = field(default_factory=ModeConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
+    soccer_draw_bias: SoccerDrawBiasConfig = field(default_factory=SoccerDrawBiasConfig)
     
     @property
     def is_dry_run(self) -> bool:
@@ -138,6 +166,13 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
         ConfigError: If the config file cannot be loaded or is invalid
     """
     path = Path(config_path)
+
+    # Load .env if present (never commit real secrets)
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
     
     if not path.exists():
         raise ConfigError(f"Configuration file not found: {config_path}")
@@ -158,6 +193,7 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
     mode_data = raw_config.get("mode", {})
     logging_data = raw_config.get("logging", {})
     monitoring_data = raw_config.get("monitoring", {})
+    soccer_data = raw_config.get("soccer_draw_bias", {})
     
     # Handle environment variable overrides
     api_data = _apply_env_overrides(api_data, {
@@ -165,7 +201,21 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
         "api_secret": "POLYMARKET_API_SECRET",
         "passphrase": "POLYMARKET_PASSPHRASE",
         "private_key": "POLYMARKET_PRIVATE_KEY",
+        "funder_address": "POLYMARKET_FUNDER_ADDRESS",
+        "signature_type": "POLYMARKET_SIGNATURE_TYPE",
+        "relayer_api_key": "POLYMARKET_RELAYER_API_KEY",
+        "relayer_api_key_address": "POLYMARKET_RELAYER_API_KEY_ADDRESS",
+        "kalshi_api_key_id": "KALSHI_API_KEY_ID",
+        "kalshi_private_key": "KALSHI_PRIVATE_KEY",
+        "kalshi_private_key_path": "KALSHI_PRIVATE_KEY_PATH",
+        "api_football_key": "API_FOOTBALL_KEY",
     })
+
+    if "signature_type" in api_data and api_data["signature_type"] is not None:
+        try:
+            api_data["signature_type"] = int(api_data["signature_type"])
+        except (TypeError, ValueError):
+            api_data["signature_type"] = 0
     
     # Build config objects
     config = BotConfig(
@@ -175,6 +225,7 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
         mode=_build_dataclass(ModeConfig, mode_data),
         logging=_build_dataclass(LoggingConfig, logging_data),
         monitoring=_build_dataclass(MonitoringConfig, monitoring_data),
+        soccer_draw_bias=_build_dataclass(SoccerDrawBiasConfig, soccer_data),
     )
     
     # Validate
@@ -236,12 +287,14 @@ def _validate_config(config: BotConfig) -> None:
     if config.mode.trading_mode.lower() not in ("live", "dry_run"):
         errors.append("mode.trading_mode must be 'live' or 'dry_run'")
     
-    # Live mode checks
+    # Live mode checks — warn via ConfigError only if truly empty placeholders
     if config.is_live:
-        if not config.api.api_key or config.api.api_key == "YOUR_API_KEY_HERE":
-            errors.append("api.api_key is required for live trading")
-        if not config.api.private_key or config.api.private_key == "YOUR_PRIVATE_KEY_HERE":
-            errors.append("api.private_key is required for live trading")
+        pk = config.api.private_key or ""
+        if not pk or pk in ("YOUR_PRIVATE_KEY_HERE", "YOUR_WALLET_PRIVATE_KEY_HERE"):
+            errors.append(
+                "api.private_key / POLYMARKET_PRIVATE_KEY is required for live trading "
+                "(set in .env — Relayer API key alone is not enough)"
+            )
     
     if errors:
         raise ConfigError("Configuration validation failed:\n" + "\n".join(f"  - {e}" for e in errors))

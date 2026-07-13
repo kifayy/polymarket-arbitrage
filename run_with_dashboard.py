@@ -15,6 +15,7 @@ Usage:
 import argparse
 import asyncio
 import logging
+import os
 import signal
 import sys
 import threading
@@ -30,6 +31,7 @@ from core.execution import ExecutionEngine, ExecutionConfig
 from core.risk_manager import RiskManager, RiskConfig
 from core.portfolio import Portfolio
 from core.cross_platform_arb import CrossPlatformArbEngine, MarketMatcher
+from core.cross_platform_execution import CrossPlatformExecutor
 from utils.config_loader import load_config, BotConfig
 from utils.logging_utils import setup_logging
 from dashboard.server import app, dashboard_state
@@ -59,6 +61,7 @@ class TradingBotWithDashboard:
         # Components - Kalshi (cross-platform)
         self.kalshi_client = None
         self.cross_platform_engine = None
+        self.cross_platform_executor = None
         self.market_matcher = None
         self._kalshi_markets = []
         self._matched_pairs = []
@@ -85,7 +88,11 @@ class TradingBotWithDashboard:
             ws_url=self.config.api.polymarket_ws_url,
             gamma_url=self.config.api.gamma_api_url,
             api_key=self.config.api.api_key,
+            api_secret=self.config.api.api_secret,
+            passphrase=self.config.api.passphrase,
             private_key=self.config.api.private_key,
+            funder_address=self.config.api.funder_address or None,
+            signature_type=self.config.api.signature_type,
             timeout=self.config.api.timeout_seconds,
             dry_run=self.config.is_dry_run,
         )
@@ -98,7 +105,12 @@ class TradingBotWithDashboard:
                 timeout=self.config.api.timeout_seconds,
                 max_retries=self.config.api.max_retries,
                 dry_run=self.config.is_dry_run,
+                api_key_id=self.config.api.kalshi_api_key_id,
+                private_key_pem=self.config.api.kalshi_private_key,
+                private_key_path=self.config.api.kalshi_private_key_path,
+                base_url=self.config.api.kalshi_api_url,
             )
+            await self.kalshi_client.connect()
             
             # Initialize cross-platform arbitrage engine
             self.cross_platform_engine = CrossPlatformArbEngine(
@@ -142,6 +154,19 @@ class TradingBotWithDashboard:
             ),
         )
         await self.execution_engine.start()
+
+        # Cross-platform executor (buy one venue, sell the other)
+        if self.kalshi_client and self.cross_platform_engine:
+            self.cross_platform_executor = CrossPlatformExecutor(
+                polymarket=self.client,
+                kalshi=self.kalshi_client,
+                risk_manager=self.risk_manager,
+                portfolio=self.portfolio,
+                default_order_size=self.config.trading.default_order_size,
+                max_order_size=self.config.trading.max_order_size,
+                dry_run=self.config.is_dry_run,
+                enabled=self.config.mode.cross_platform_execution,
+            )
         
         # Initialize arb engine
         self.arb_engine = ArbEngine(ArbConfig(
@@ -167,6 +192,7 @@ class TradingBotWithDashboard:
         await self.data_feed.start()
         
         # Initialize dashboard integration
+        soccer_on = bool(getattr(self.config.soccer_draw_bias, "enabled", False))
         self.dashboard_integration = DashboardIntegration(
             data_feed=self.data_feed,
             arb_engine=self.arb_engine,
@@ -174,8 +200,29 @@ class TradingBotWithDashboard:
             risk_manager=self.risk_manager,
             portfolio=self.portfolio,
             mode="dry_run" if self.config.is_dry_run else "live",
+            mm_enabled=self.config.trading.mm_enabled,
+            cross_platform_enabled=self.config.mode.cross_platform_enabled,
+            soccer_enabled=soccer_on,
         )
         await self.dashboard_integration.start()
+
+        # Soccer draw-bias strategy (same Arb Desk process)
+        self.soccer_bot = None
+        if soccer_on:
+            try:
+                from bots.soccer_draw_bias.bot import SoccerDrawBiasBot
+
+                self.soccer_bot = SoccerDrawBiasBot(
+                    self.config,
+                    dashboard=self.dashboard_integration,
+                )
+                await self.soccer_bot.initialize()
+                if self.soccer_bot._running:
+                    self.dashboard_integration.attach_soccer_bot(self.soccer_bot)
+                    asyncio.create_task(self.soccer_bot.run_loop())
+                    logger.info("Soccer Draw Bias bot started inside Arb Desk")
+            except Exception as e:
+                logger.warning(f"Soccer Draw Bias failed to start: {e}")
         
         # Start fill simulation for dry run
         if self.config.is_dry_run and self.config.mode.simulate_fills:
@@ -216,6 +263,7 @@ class TradingBotWithDashboard:
             if signal.opportunity:
                 self.dashboard_integration.add_opportunity(
                     opportunity_type=signal.opportunity.opportunity_type.value,
+                    strategy=signal.opportunity.opportunity_type.value,
                     market_id=signal.market_id,
                     edge=signal.opportunity.edge,
                     suggested_size=signal.opportunity.suggested_size,
@@ -224,6 +272,7 @@ class TradingBotWithDashboard:
             self.dashboard_integration.add_signal(
                 action=signal.action,
                 market_id=signal.market_id,
+                strategy=signal.opportunity.opportunity_type.value if signal.opportunity else None,
             )
             
             # Submit to execution
@@ -243,11 +292,17 @@ class TradingBotWithDashboard:
                         trade = self.client.simulate_fill(order.order_id)
                         if trade:
                             self.execution_engine.handle_fill(trade)
+                            strategy = order.strategy_tag or "bundle_arb"
+                            edge = 0.01
+                            if "mm" in strategy:
+                                edge = 0.005
                             self.dashboard_integration.add_trade(
                                 side=trade.side.value,
                                 price=trade.price,
                                 size=trade.size,
                                 market_id=trade.market_id,
+                                strategy=strategy,
+                                edge=edge,
                             )
             except asyncio.CancelledError:
                 break
@@ -261,7 +316,7 @@ class TradingBotWithDashboard:
         
         logger.info("Starting Kalshi market monitoring...")
         
-        async with self.kalshi_client:
+        try:
             # Set up dashboard for loading state
             dashboard_state.cross_platform["enabled"] = True
             dashboard_state.cross_platform["matching_status"] = "loading"
@@ -309,6 +364,9 @@ class TradingBotWithDashboard:
                 
                 # Start matching as a background task (dashboard will show progress)
                 asyncio.create_task(self._run_matching_background(polymarket_markets))
+        except Exception as e:
+            logger.error(f"Kalshi monitoring failed: {e}")
+            dashboard_state.cross_platform["matching_status"] = "error"
     
     async def _run_matching_background(self, polymarket_markets: list) -> None:
         """Run market matching in a thread pool so dashboard stays fully responsive."""
@@ -379,17 +437,98 @@ class TradingBotWithDashboard:
                 })
             
             dashboard_state.cross_platform["matched_pairs_data"] = matched_pairs_display
+
+            # Start continuous cross-platform price scanning + optional execution
+            asyncio.create_task(self._cross_platform_scan_loop())
             
         except Exception as e:
             logger.error(f"Matching error: {e}")
             import traceback
             traceback.print_exc()
             dashboard_state.cross_platform["matching_status"] = "error"
+
+    async def _cross_platform_scan_loop(self) -> None:
+        """Scan matched pairs for price gaps and optionally execute both legs."""
+        if not self.cross_platform_engine or not self.kalshi_client:
+            return
+
+        logger.info(
+            f"Cross-platform scan loop started "
+            f"(pairs={len(self._matched_pairs)}, "
+            f"execution={'ON' if self.cross_platform_executor and self.cross_platform_executor.enabled else 'OFF'}, "
+            f"dry_run={self.config.is_dry_run})"
+        )
+
+        # Cap scan size to keep API load reasonable
+        max_pairs = min(len(self._matched_pairs), 80)
+
+        while self._running:
+            try:
+                for pair in self._matched_pairs[:max_pairs]:
+                    if not self._running:
+                        break
+
+                    poly_ob = (
+                        self.data_feed.get_order_book(pair.polymarket_id)
+                        if self.data_feed else None
+                    )
+                    if not poly_ob:
+                        continue
+
+                    kalshi_ob = await self.kalshi_client.get_orderbook_unified(
+                        pair.kalshi_ticker
+                    )
+                    if not kalshi_ob:
+                        continue
+
+                    opp = self.cross_platform_engine.check_arbitrage(
+                        pair, poly_ob, kalshi_ob
+                    )
+                    if not opp:
+                        continue
+
+                    if self.dashboard_integration:
+                        self.dashboard_integration.add_opportunity(
+                            opportunity_type="cross_platform",
+                            strategy="cross_platform",
+                            market_id=pair.pair_id,
+                            edge=opp.net_edge,
+                            suggested_size=opp.suggested_size,
+                        )
+
+                    if self.cross_platform_executor and self.cross_platform_executor.enabled:
+                        result = await self.cross_platform_executor.execute(opp)
+                        if result.success and self.dashboard_integration:
+                            self.dashboard_integration.add_trade(
+                                side="cross",
+                                price=opp.buy_price,
+                                size=result.size,
+                                market_id=pair.pair_id,
+                                strategy="cross_platform",
+                                edge=opp.net_edge,
+                                pnl=opp.net_edge * result.size,
+                            )
+
+                    await asyncio.sleep(0.15)
+
+                await asyncio.sleep(5.0)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Cross-platform scan error: {e}")
+                await asyncio.sleep(5.0)
     
     async def stop(self) -> None:
         """Stop everything gracefully."""
         logger.info("Shutting down...")
         self._running = False
+
+        if getattr(self, "soccer_bot", None):
+            try:
+                await self.soccer_bot.stop()
+            except Exception as e:
+                logger.warning(f"Soccer bot stop error: {e}")
         
         if self.dashboard_integration:
             await self.dashboard_integration.stop()
@@ -402,8 +541,9 @@ class TradingBotWithDashboard:
         
         if self.client:
             await self.client.disconnect()
-        
-        # Kalshi client is closed via async context manager in _start_kalshi_monitoring
+
+        if self.kalshi_client:
+            await self.kalshi_client.disconnect()
         
         if self._server:
             self._server.should_exit = True
@@ -494,8 +634,8 @@ def main() -> None:
     parser.add_argument(
         "--port",
         type=int,
-        default=8888,
-        help="Dashboard port (default: 8888)"
+        default=int(os.environ.get("PORT", "8888")),
+        help="Dashboard port (default: 8888, or $PORT on Railway)",
     )
     
     parser.add_argument(

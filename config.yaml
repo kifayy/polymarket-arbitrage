@@ -10,13 +10,20 @@ api:
   # Kalshi API endpoint (public, no auth needed for market data)
   kalshi_api_url: "https://api.elections.kalshi.com/trade-api/v2"
   
-  # Authentication (replace with your credentials)
+  # Polymarket CLOB credentials — prefer .env over putting secrets here
   api_key: "YOUR_API_KEY_HERE"
   api_secret: "YOUR_API_SECRET_HERE"
   passphrase: "YOUR_PASSPHRASE_HERE"
-  
-  # Wallet configuration
   private_key: "YOUR_PRIVATE_KEY_HERE"
+  funder_address: ""          # proxy/deposit wallet (optional for EOA)
+  signature_type: 0           # 0=EOA, 1=Magic/email, 2=browser proxy
+  relayer_api_key: ""         # optional gasless relayer key
+  relayer_api_key_address: ""
+
+  # Kalshi trading credentials — prefer .env
+  kalshi_api_key_id: ""
+  kalshi_private_key: ""
+  kalshi_private_key_path: "secrets/kalshi_private_key.pem"
   
   # Request settings
   timeout_seconds: 30
@@ -83,6 +90,7 @@ mode:
   # Cross-platform arbitrage (Polymarket + Kalshi)
   cross_platform_enabled: true    # Enable cross-platform arbitrage detection
   kalshi_enabled: true            # Enable Kalshi market monitoring
+  cross_platform_execution: true  # Place both legs when opportunity found
   min_match_similarity: 0.6       # Minimum similarity score for market matching (0-1)
   
   # Dry run settings
@@ -115,4 +123,23 @@ monitoring:
   # Performance metrics
   track_latency: true
   track_fill_rates: true
+
+# 90-minute draw-bias soccer strategy (run via: python run_soccer_draw_bias.py)
+soccer_draw_bias:
+  enabled: true
+  # API-Football league IDs: EPL, UCL, La Liga, Serie A, Bundesliga, Ligue 1, MLS, World Cup, UEL
+  league_ids: [39, 2, 140, 135, 78, 61, 253, 1, 3]
+  min_prematch_favorite_prob: 0.55
+  min_market_volume: 10000
+  min_match_similarity: 0.72
+  active_window_start: 75
+  active_window_end: 88
+  target_max_buy_price: 0.15
+  risk_unit_usd: 15.0
+  poll_interval_monitoring_sec: 180
+  poll_interval_active_sec: 60
+  db_path: "data/soccer_draw_bias.db"
+  # Optional season override (API-Football year). Leave unset — bot uses date-only
+  # discovery (works on free tier). Paid plans can set e.g. season: 2025
+  # season: 2025
 

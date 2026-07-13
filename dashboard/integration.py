@@ -30,18 +30,43 @@ class DashboardIntegration:
         risk_manager=None,
         portfolio=None,
         mode: str = "dry_run",
+        mm_enabled: bool = False,
+        cross_platform_enabled: bool = True,
+        soccer_enabled: bool = False,
     ):
         self.data_feed = data_feed
         self.arb_engine = arb_engine
         self.execution_engine = execution_engine
         self.risk_manager = risk_manager
         self.portfolio = portfolio
+        self.soccer_bot = None
         
         dashboard_state.mode = mode
         dashboard_state.is_running = False
+        dashboard_state.set_bot_status("bundle_arb", "running", enabled=True)
+        dashboard_state.set_bot_status(
+            "market_making",
+            "running" if mm_enabled else "paused",
+            enabled=mm_enabled,
+        )
+        dashboard_state.set_bot_status(
+            "cross_platform",
+            "running" if cross_platform_enabled else "paused",
+            enabled=cross_platform_enabled,
+        )
+        dashboard_state.set_bot_status(
+            "soccer_draw_bias",
+            "running" if soccer_enabled else "paused",
+            enabled=soccer_enabled,
+        )
         
         self._update_task: Optional[asyncio.Task] = None
         self._running = False
+
+    def attach_soccer_bot(self, soccer_bot) -> None:
+        """Wire the soccer draw-bias bot for live dashboard cards."""
+        self.soccer_bot = soccer_bot
+        dashboard_state.set_bot_status("soccer_draw_bias", "running", enabled=True)
     
     async def start(self, update_interval: float = 1.0) -> None:
         """Start the dashboard integration."""
@@ -160,8 +185,67 @@ class DashboardIntegration:
                 "orderbook_updates": self.data_feed.update_count,
                 "is_streaming": self.data_feed.is_running,
             }
+
+        # Soccer draw-bias match snapshot
+        if self.soccer_bot is not None:
+            self._sync_soccer_state()
         
         dashboard_state.last_update = datetime.utcnow()
+
+    def _sync_soccer_state(self) -> None:
+        """Push soccer match universe into dashboard_state.soccer."""
+        from bots.soccer_draw_bias.models import MatchStatus
+
+        matches = list(getattr(self.soccer_bot, "matches", {}).values())
+        counts = {
+            "scheduled": 0,
+            "monitoring": 0,
+            "active_window": 0,
+            "executed": 0,
+            "settled": 0,
+            "discarded": 0,
+        }
+        rows = []
+        for m in matches:
+            key = m.status.value.lower()
+            if key in counts:
+                counts[key] += 1
+            rows.append({
+                "match_id": m.match_id,
+                "home_team": m.home_team,
+                "away_team": m.away_team,
+                "favorite": m.favorite_team,
+                "status": m.status.value,
+                "minute": m.current_minute,
+                "score": list(m.current_score),
+                "market_id": m.polymarket_market_id,
+                "pnl": m.pnl,
+                "outcome": m.outcome,
+            })
+            # Surface as market rows so Markets tab isn't empty in soccer-only mode
+            mid = m.polymarket_market_id or str(m.match_id)
+            if mid not in dashboard_state.markets:
+                dashboard_state.markets[mid] = {
+                    "market_id": mid,
+                    "question": (
+                        f"[Soccer {m.status.value}] {m.home_team} vs {m.away_team} "
+                        f"(fav {m.favorite_team}) {m.current_score[0]}-{m.current_score[1]} "
+                        f"{m.current_minute}'"
+                    ),
+                    "best_bid_yes": None,
+                    "best_ask_yes": None,
+                    "best_bid_no": None,
+                    "best_ask_no": None,
+                    "total_ask": None,
+                    "total_bid": None,
+                    "spread_yes": None,
+                    "spread_no": None,
+                }
+        dashboard_state.soccer = {**counts, "matches": rows}
+        if matches and dashboard_state.bots.get("soccer_draw_bias", {}).get("enabled"):
+            # Keep card alive while universe is tracked
+            if any(m.status not in (MatchStatus.SETTLED, MatchStatus.DISCARDED) for m in matches):
+                dashboard_state.set_bot_status("soccer_draw_bias", "running", enabled=True)
     
     async def _broadcast_update(self) -> None:
         """Broadcast update to connected clients."""
@@ -178,8 +262,10 @@ class DashboardIntegration:
         **kwargs
     ) -> None:
         """Add an opportunity to the dashboard."""
+        strategy = kwargs.pop("strategy", None) or opportunity_type
         opp = {
             "type": opportunity_type,
+            "strategy": strategy,
             "market_id": market_id,
             "edge": edge,
             **kwargs
@@ -218,7 +304,7 @@ class DashboardIntegration:
         size: float,
         **kwargs
     ) -> None:
-        """Add a trade to the dashboard."""
+        """Add a trade to the dashboard (and strategy P/L ledger)."""
         trade = {
             "side": side,
             "price": price,

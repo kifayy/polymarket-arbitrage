@@ -3,15 +3,23 @@ Kalshi API Client
 =================
 
 Client for interacting with Kalshi prediction market exchange.
-Supports public market data endpoints (no authentication required).
+Public market data needs no auth. Trading uses RSA-PSS signed requests.
 
 API Documentation: https://docs.kalshi.com/getting_started/quick_start_market_data
 """
 
+from __future__ import annotations
+
 import asyncio
+import base64
 import logging
+import os
+import uuid
 from datetime import datetime
-from typing import Optional, AsyncIterator
+from pathlib import Path
+from typing import Any, Optional, AsyncIterator
+from urllib.parse import urlparse
+
 import httpx
 
 from kalshi_client.models import (
@@ -20,7 +28,14 @@ from kalshi_client.models import (
     KalshiEvent,
     KalshiSeries,
 )
-from polymarket_client.models import PriceLevel, OrderBook
+from polymarket_client.models import (
+    PriceLevel,
+    OrderBook,
+    Order,
+    OrderSide,
+    OrderStatus,
+    TokenType,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +55,10 @@ class KalshiClient:
         timeout: float = 30.0,
         max_retries: int = 3,
         dry_run: bool = True,
+        api_key_id: Optional[str] = None,
+        private_key_pem: Optional[str] = None,
+        private_key_path: Optional[str] = None,
+        base_url: Optional[str] = None,
     ):
         """
         Initialize Kalshi client.
@@ -48,27 +67,176 @@ class KalshiClient:
             timeout: Request timeout in seconds
             max_retries: Maximum number of retry attempts
             dry_run: If True, don't place real orders (read-only mode)
+            api_key_id: Kalshi API key ID for authenticated trading
+            private_key_pem: RSA private key PEM string
+            private_key_path: Path to RSA private key .pem file
+            base_url: Override API base URL
         """
         self.timeout = timeout
         self.max_retries = max_retries
         self.dry_run = dry_run
+        self.api_key_id = api_key_id or os.environ.get("KALSHI_API_KEY_ID", "")
+        self.private_key_pem = private_key_pem or os.environ.get("KALSHI_PRIVATE_KEY", "")
+        self.private_key_path = private_key_path or os.environ.get("KALSHI_PRIVATE_KEY_PATH", "")
+        if base_url:
+            self.BASE_URL = base_url.rstrip("/")
         self._client: Optional[httpx.AsyncClient] = None
         self._markets_cache: dict[str, KalshiMarket] = {}
+        self._private_key = None
+        self._simulated_orders: dict[str, Order] = {}
         
-    async def __aenter__(self) -> "KalshiClient":
-        """Async context manager entry."""
-        self._client = httpx.AsyncClient(
-            timeout=self.timeout,
-            headers={"Accept": "application/json"}
+    @property
+    def has_trading_creds(self) -> bool:
+        """True if API key ID and a private key source are configured."""
+        key_ok = bool(self.api_key_id) and self.api_key_id not in (
+            "", "YOUR_KALSHI_API_KEY_ID_HERE", "YOUR_API_KEY_HERE",
         )
+        pem_ok = bool(self.private_key_pem.strip()) if self.private_key_pem else False
+        path_ok = bool(self.private_key_path) and Path(self.private_key_path).expanduser().exists()
+        return key_ok and (pem_ok or path_ok)
+
+    async def __aenter__(self) -> "KalshiClient":
+        await self.connect()
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Async context manager exit."""
+        await self.disconnect()
+
+    async def connect(self) -> None:
+        """Initialize HTTP client (idempotent)."""
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                timeout=self.timeout,
+                headers={"Accept": "application/json"},
+            )
+            logger.info(
+                f"Kalshi client connected (dry_run={self.dry_run}, "
+                f"trading_creds={self.has_trading_creds})"
+            )
+
+    async def disconnect(self) -> None:
+        """Close HTTP client."""
         if self._client:
             await self._client.aclose()
             self._client = None
-    
+            logger.info("Kalshi client disconnected")
+
+    def _load_private_key(self):
+        """Load RSA private key from PEM string or file path."""
+        if self._private_key is not None:
+            return self._private_key
+
+        try:
+            from cryptography.hazmat.primitives import serialization
+        except ImportError as e:
+            raise RuntimeError(
+                "cryptography package required for Kalshi trading. "
+                "pip install cryptography"
+            ) from e
+
+        pem_data = None
+        if self.private_key_pem and "BEGIN" in self.private_key_pem:
+            pem_data = self.private_key_pem.encode("utf-8")
+        elif self.private_key_path:
+            path = Path(self.private_key_path).expanduser()
+            if path.exists():
+                pem_data = path.read_bytes()
+
+        if not pem_data:
+            raise RuntimeError(
+                "Kalshi private key not configured. "
+                "Set KALSHI_PRIVATE_KEY or KALSHI_PRIVATE_KEY_PATH."
+            )
+
+        self._private_key = serialization.load_pem_private_key(pem_data, password=None)
+        return self._private_key
+
+    def _create_signature(self, timestamp: str, method: str, path: str) -> str:
+        """Create RSA-PSS signature for Kalshi authenticated request."""
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import padding
+
+        private_key = self._load_private_key()
+        path_without_query = path.split("?")[0]
+        message = f"{timestamp}{method.upper()}{path_without_query}".encode("utf-8")
+        signature = private_key.sign(
+            message,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.DIGEST_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
+        return base64.b64encode(signature).decode("utf-8")
+
+    def _auth_headers(self, method: str, endpoint: str) -> dict[str, str]:
+        """Build Kalshi auth headers for a request."""
+        if not self.has_trading_creds:
+            return {}
+        timestamp = str(int(datetime.utcnow().timestamp() * 1000))
+        # Signing path must include /trade-api/v2 prefix
+        full_path = urlparse(f"{self.BASE_URL}{endpoint}").path
+        signature = self._create_signature(timestamp, method, full_path)
+        return {
+            "KALSHI-ACCESS-KEY": self.api_key_id,
+            "KALSHI-ACCESS-SIGNATURE": signature,
+            "KALSHI-ACCESS-TIMESTAMP": timestamp,
+        }
+
+    async def _request(
+        self,
+        method: str,
+        endpoint: str,
+        params: Optional[dict] = None,
+        json_data: Optional[dict] = None,
+        auth: bool = False,
+    ) -> Any:
+        """Make an HTTP request with optional Kalshi RSA auth."""
+        if not self._client:
+            await self.connect()
+
+        url = f"{self.BASE_URL}{endpoint}"
+        headers = {"Accept": "application/json"}
+        if auth:
+            headers.update(self._auth_headers(method, endpoint))
+            if method.upper() in ("POST", "PUT", "PATCH"):
+                headers["Content-Type"] = "application/json"
+
+        for attempt in range(self.max_retries):
+            try:
+                response = await self._client.request(
+                    method,
+                    url,
+                    params=params,
+                    json=json_data,
+                    headers=headers,
+                )
+                if response.status_code == 404:
+                    logger.debug(f"Not found: {endpoint}")
+                    return {}
+                if response.status_code == 429:
+                    wait_time = 2 ** attempt
+                    logger.warning(f"Rate limited, waiting {wait_time}s before retry")
+                    await asyncio.sleep(wait_time)
+                    continue
+                response.raise_for_status()
+                if response.status_code == 204 or not response.content:
+                    return {}
+                return response.json()
+            except httpx.HTTPStatusError as e:
+                logger.error(f"HTTP error {e.response.status_code}: {e.response.text[:300]}")
+                if e.response.status_code >= 500 and attempt < self.max_retries - 1:
+                    await asyncio.sleep(1)
+                    continue
+                raise
+            except httpx.RequestError as e:
+                logger.warning(f"Request error (attempt {attempt + 1}): {e}")
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(1)
+                else:
+                    raise
+        return {}
+
     async def _get(self, endpoint: str, params: Optional[dict] = None) -> dict:
         """
         Make a GET request to the Kalshi API.
@@ -80,35 +248,8 @@ class KalshiClient:
         Returns:
             JSON response as dictionary
         """
-        if not self._client:
-            raise RuntimeError("Client not initialized. Use async with context manager.")
-        
-        url = f"{self.BASE_URL}{endpoint}"
-        
-        for attempt in range(self.max_retries):
-            try:
-                response = await self._client.get(url, params=params)
-                response.raise_for_status()
-                return response.json()
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 429:  # Rate limited
-                    wait_time = 2 ** attempt
-                    logger.warning(f"Rate limited, waiting {wait_time}s before retry")
-                    await asyncio.sleep(wait_time)
-                elif e.response.status_code == 404:
-                    logger.debug(f"Not found: {endpoint}")
-                    return {}
-                else:
-                    logger.error(f"HTTP error {e.response.status_code}: {e}")
-                    raise
-            except httpx.RequestError as e:
-                logger.warning(f"Request error (attempt {attempt + 1}): {e}")
-                if attempt < self.max_retries - 1:
-                    await asyncio.sleep(1)
-                else:
-                    raise
-        
-        return {}
+        result = await self._request("GET", endpoint, params=params, auth=False)
+        return result if isinstance(result, dict) else {}
     
     # =========================================================================
     # SERIES ENDPOINTS
@@ -460,4 +601,108 @@ class KalshiClient:
             m for m in all_markets 
             if query_lower in m.title.lower() or query_lower in m.subtitle.lower()
         ]
+
+    # =========================================================================
+    # TRADING (authenticated)
+    # =========================================================================
+
+    async def place_order(
+        self,
+        ticker: str,
+        token_type: TokenType,
+        side: OrderSide,
+        price: float,
+        size: float,
+        strategy_tag: str = "",
+    ) -> Order:
+        """
+        Place a limit order on Kalshi.
+
+        Uses POST /portfolio/orders with yes/no side and prices in cents.
+        In dry_run mode, simulates the order locally.
+        """
+        order_id = f"kalshi_{uuid.uuid4().hex[:12]}"
+        order = Order(
+            order_id=order_id,
+            market_id=ticker,
+            token_type=token_type,
+            side=side,
+            price=price,
+            size=size,
+            status=OrderStatus.OPEN,
+            strategy_tag=strategy_tag,
+        )
+
+        if self.dry_run:
+            logger.info(
+                f"[DRY RUN] Kalshi order: {side.value} {token_type.value} "
+                f"{size:.2f} @ {price:.4f} on {ticker}"
+            )
+            self._simulated_orders[order_id] = order
+            return order
+
+        if not self.has_trading_creds:
+            order.status = OrderStatus.REJECTED
+            raise RuntimeError(
+                "Kalshi trading credentials missing. "
+                "Set KALSHI_API_KEY_ID and KALSHI_PRIVATE_KEY(_PATH)."
+            )
+
+        count = max(1, int(round(size)))
+        price_cents = max(1, min(99, int(round(price * 100))))
+        action = "buy" if side == OrderSide.BUY else "sell"
+        kalshi_side = "yes" if token_type == TokenType.YES else "no"
+        client_order_id = str(uuid.uuid4())
+
+        payload: dict[str, Any] = {
+            "ticker": ticker,
+            "action": action,
+            "side": kalshi_side,
+            "count": count,
+            "type": "limit",
+            "client_order_id": client_order_id,
+        }
+        if kalshi_side == "yes":
+            payload["yes_price"] = price_cents
+        else:
+            payload["no_price"] = price_cents
+
+        data = await self._request(
+            "POST",
+            "/portfolio/orders",
+            json_data=payload,
+            auth=True,
+        )
+
+        order_data = data.get("order", data) if isinstance(data, dict) else {}
+        order.order_id = str(
+            order_data.get("order_id") or order_data.get("id") or order_id
+        )
+        order.status = OrderStatus.OPEN
+        logger.info(
+            f"Kalshi order placed: {order.order_id} | {action} {kalshi_side} "
+            f"x{count} @ {price_cents}c on {ticker}"
+        )
+        return order
+
+    async def cancel_order(self, order_id: str) -> None:
+        """Cancel a Kalshi order."""
+        if self.dry_run:
+            if order_id in self._simulated_orders:
+                self._simulated_orders[order_id].status = OrderStatus.CANCELLED
+                logger.info(f"[DRY RUN] Kalshi cancelled: {order_id}")
+            return
+
+        if not self.has_trading_creds:
+            raise RuntimeError("Kalshi trading credentials missing")
+
+        await self._request("DELETE", f"/portfolio/orders/{order_id}", auth=True)
+        logger.info(f"Kalshi order cancelled: {order_id}")
+
+    async def get_balance(self) -> dict:
+        """Fetch portfolio balance (requires auth)."""
+        if self.dry_run or not self.has_trading_creds:
+            return {"balance": 0, "dry_run": True}
+        data = await self._request("GET", "/portfolio/balance", auth=True)
+        return data if isinstance(data, dict) else {}
 

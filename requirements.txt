@@ -19,6 +19,10 @@ python-dotenv>=1.0.0
 fastapi>=0.104.0
 uvicorn>=0.24.0
 
+# Trading clients / crypto
+py-clob-client>=0.34.0
+cryptography>=41.0.0
+
 # Testing
 pytest>=7.4.0
 pytest-asyncio>=0.21.0

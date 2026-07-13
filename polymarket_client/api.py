@@ -112,6 +112,8 @@ class PolymarketClient(BasePolymarketClient):
         api_secret: Optional[str] = None,
         passphrase: Optional[str] = None,
         private_key: Optional[str] = None,
+        funder_address: Optional[str] = None,
+        signature_type: int = 0,
         timeout: float = 30.0,
         max_retries: int = 3,
         retry_delay: float = 1.0,
@@ -124,6 +126,8 @@ class PolymarketClient(BasePolymarketClient):
         self.api_secret = api_secret
         self.passphrase = passphrase
         self.private_key = private_key
+        self.funder_address = funder_address
+        self.signature_type = signature_type
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
@@ -143,6 +147,10 @@ class PolymarketClient(BasePolymarketClient):
         
         # Cache for market data (avoids re-fetching)
         self._markets_cache: dict[str, Market] = {}
+
+        # Lazy-init sync CLOB trading client (py-clob-client)
+        self._clob_client = None
+        self._clob_ready = False
         
     async def __aenter__(self) -> "PolymarketClient":
         await self.connect()
@@ -170,16 +178,123 @@ class PolymarketClient(BasePolymarketClient):
         logger.info("Polymarket client disconnected")
     
     def _get_headers(self) -> dict[str, str]:
-        """Get authentication headers."""
-        headers = {
+        """Get basic HTTP headers (CLOB trading uses py-clob-client separately)."""
+        return {
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-        if self.api_key:
-            # TODO: Implement proper CLOB API authentication
-            # Polymarket uses L1/L2 authentication with signatures
-            headers["POLY_API_KEY"] = self.api_key
-        return headers
+
+    def _has_live_trading_creds(self) -> bool:
+        pk = (self.private_key or "").strip()
+        return bool(pk) and pk not in (
+            "YOUR_PRIVATE_KEY_HERE",
+            "YOUR_WALLET_PRIVATE_KEY_HERE",
+            "",
+        )
+
+    def _get_clob_client(self):
+        """
+        Lazily initialize the Polymarket CLOB trading client.
+
+        Prefers py-clob-client; falls back to py_clob_client_v2 if installed.
+        """
+        if self._clob_client is not None:
+            return self._clob_client
+
+        if not self._has_live_trading_creds():
+            raise RuntimeError(
+                "POLYMARKET_PRIVATE_KEY required for live Polymarket trading"
+            )
+
+        key = self.private_key.strip()
+        if key.startswith("0x"):
+            key = key[2:]
+
+        # --- py-clob-client (v1) ---
+        try:
+            from py_clob_client.client import ClobClient
+            from py_clob_client.clob_types import ApiCreds
+
+            kwargs = {
+                "host": self.rest_url,
+                "key": key,
+                "chain_id": 137,
+            }
+            if self.funder_address:
+                kwargs["signature_type"] = self.signature_type
+                kwargs["funder"] = self.funder_address
+
+            client = ClobClient(**kwargs)
+
+            if self.api_key and self.api_secret and self.passphrase:
+                if self.api_key not in ("YOUR_API_KEY_HERE", ""):
+                    client.set_api_creds(ApiCreds(
+                        api_key=self.api_key,
+                        api_secret=self.api_secret,
+                        api_passphrase=self.passphrase,
+                    ))
+                else:
+                    client.set_api_creds(client.create_or_derive_api_creds())
+            else:
+                client.set_api_creds(client.create_or_derive_api_creds())
+
+            self._clob_client = client
+            self._clob_ready = True
+            logger.info("Polymarket CLOB client ready (py-clob-client)")
+            return self._clob_client
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning(f"py-clob-client init failed, trying v2: {e}")
+
+        # --- py_clob_client_v2 ---
+        try:
+            from py_clob_client_v2 import ClobClient, ApiCreds
+
+            kwargs = {
+                "host": self.rest_url,
+                "key": key,
+                "chain_id": 137,
+            }
+            if self.api_key and self.api_secret and self.passphrase:
+                if self.api_key not in ("YOUR_API_KEY_HERE", ""):
+                    kwargs["creds"] = ApiCreds(
+                        api_key=self.api_key,
+                        api_secret=self.api_secret,
+                        api_passphrase=self.passphrase,
+                    )
+
+            client = ClobClient(**kwargs)
+            if "creds" not in kwargs:
+                creds = client.create_or_derive_api_key()
+                client = ClobClient(
+                    host=self.rest_url,
+                    chain_id=137,
+                    key=key,
+                    creds=creds,
+                )
+
+            self._clob_client = client
+            self._clob_ready = True
+            logger.info("Polymarket CLOB client ready (py_clob_client_v2)")
+            return self._clob_client
+        except ImportError as e:
+            raise RuntimeError(
+                "Install a Polymarket CLOB client: "
+                "pip install py-clob-client  (or py_clob_client_v2)"
+            ) from e
+
+    def _resolve_token_id(self, market_id: str, token_type: TokenType) -> str:
+        """Map market + YES/NO to CLOB token id."""
+        market = self._markets_cache.get(market_id)
+        if not market:
+            raise ValueError(f"Market {market_id} not in cache — fetch markets first")
+        token_id = (
+            market.yes_token_id if token_type == TokenType.YES else market.no_token_id
+        )
+        if not token_id:
+            raise ValueError(f"No token id for {token_type.value} on {market_id}")
+        return token_id
     
     async def _request(
         self,
@@ -246,12 +361,22 @@ class PolymarketClient(BasePolymarketClient):
                 params["limit"] = limit
                 params["offset"] = offset
                 
-                data = await self._request(
-                    "GET", 
-                    "/markets",
-                    params=params,
-                    base_url=self.gamma_url,
-                )
+                try:
+                    data = await self._request(
+                        "GET", 
+                        "/markets",
+                        params=params,
+                        base_url=self.gamma_url,
+                    )
+                except httpx.HTTPStatusError as e:
+                    # Gamma API rejects high offsets (422) — use what we have
+                    if e.response.status_code == 422 and all_markets:
+                        logger.warning(
+                            f"Pagination stopped at offset={offset} (422); "
+                            f"using {len(all_markets)} markets already fetched"
+                        )
+                        break
+                    raise
                 
                 if not data:
                     break
@@ -765,10 +890,7 @@ class PolymarketClient(BasePolymarketClient):
         strategy_tag: str = ""
     ) -> Order:
         """
-        Place a limit order.
-        
-        TODO: Implement with actual Polymarket CLOB API:
-        POST https://clob.polymarket.com/order
+        Place a limit order via Polymarket CLOB (or simulate in dry_run).
         """
         order_id = f"order_{uuid.uuid4().hex[:12]}"
         order = Order(
@@ -788,23 +910,52 @@ class PolymarketClient(BasePolymarketClient):
             return order
         
         try:
-            # TODO: Implement actual order placement
-            # Would need to:
-            # 1. Build order with proper token IDs
-            # 2. Sign with private key
-            # 3. Submit to CLOB
-            payload = {
-                "market_id": market_id,
-                "token_id": "",  # TODO: Map token_type to actual token ID
-                "side": side.value,
-                "price": str(price),
-                "size": str(size),
-            }
-            
-            data = await self._request("POST", "/order", json_data=payload)
-            order.order_id = data.get("order_id", order_id)
+            token_id = self._resolve_token_id(market_id, token_type)
+
+            def _sync_place() -> dict:
+                client = self._get_clob_client()
+                # Prefer v1 API shape
+                try:
+                    from py_clob_client.clob_types import OrderArgs, OrderType
+                    from py_clob_client.order_builder.constants import BUY, SELL
+
+                    side_const = BUY if side == OrderSide.BUY else SELL
+                    args = OrderArgs(
+                        token_id=token_id,
+                        price=float(price),
+                        size=float(size),
+                        side=side_const,
+                    )
+                    signed = client.create_order(args)
+                    return client.post_order(signed, OrderType.GTC)
+                except ImportError:
+                    from py_clob_client_v2 import (
+                        OrderArgs,
+                        OrderType,
+                        PartialCreateOrderOptions,
+                        Side,
+                    )
+                    side_enum = Side.BUY if side == OrderSide.BUY else Side.SELL
+                    return client.create_and_post_order(
+                        order_args=OrderArgs(
+                            token_id=token_id,
+                            price=float(price),
+                            size=float(size),
+                            side=side_enum,
+                        ),
+                        options=PartialCreateOrderOptions(tick_size="0.01"),
+                        order_type=OrderType.GTC,
+                    )
+
+            data = await asyncio.to_thread(_sync_place)
+            if isinstance(data, dict):
+                order.order_id = str(
+                    data.get("orderID")
+                    or data.get("order_id")
+                    or data.get("id")
+                    or order_id
+                )
             order.status = OrderStatus.OPEN
-            
             logger.info(f"Order placed: {order.order_id}")
             return order
             
@@ -814,12 +965,7 @@ class PolymarketClient(BasePolymarketClient):
             raise
     
     async def cancel_order(self, order_id: str) -> None:
-        """
-        Cancel an open order.
-        
-        TODO: Implement with actual Polymarket CLOB API:
-        DELETE https://clob.polymarket.com/order/{order_id}
-        """
+        """Cancel an open order on the CLOB (or simulate in dry_run)."""
         if self.dry_run:
             if order_id in self._simulated_orders:
                 self._simulated_orders[order_id].status = OrderStatus.CANCELLED
@@ -827,7 +973,16 @@ class PolymarketClient(BasePolymarketClient):
             return
         
         try:
-            await self._request("DELETE", f"/order/{order_id}")
+            def _sync_cancel() -> None:
+                client = self._get_clob_client()
+                if hasattr(client, "cancel"):
+                    client.cancel(order_id)
+                elif hasattr(client, "cancel_order"):
+                    client.cancel_order(order_id)
+                else:
+                    raise RuntimeError("CLOB client has no cancel method")
+
+            await asyncio.to_thread(_sync_cancel)
             logger.info(f"Order cancelled: {order_id}")
         except Exception as e:
             logger.error(f"Failed to cancel order {order_id}: {e}")

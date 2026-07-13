@@ -37,6 +37,9 @@ env/
 *.swo
 *~
 
+data/
+*.db
+
 # Logs
 logs/
 *.log
@@ -45,6 +48,11 @@ logs/
 .env
 .env.local
 .env.*.local
+
+# Secrets (API keys / PEM files)
+secrets/
+*.pem
+*.key
 
 # OS files
 .DS_Store

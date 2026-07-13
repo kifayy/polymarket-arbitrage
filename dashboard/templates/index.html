@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Arb Desk</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Literata:opsz,wght@7..72,500;7..72,700&family=Work+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --ink: #12140f;
+      --panel: #1a1d16;
+      --panel-2: #22261c;
+      --line: #303628;
+      --paper: #ebe6dc;
+      --mute: #8f9683;
+      --good: #7aa87a;
+      --bad: #c45c4a;
+      --brass: #c9a227;
+      --warn: #c9a227;
+      --radius: 6px;
+      --nav-w: 210px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      background: var(--ink);
+      color: var(--paper);
+      font-family: "Work Sans", sans-serif;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    body {
+      background-image:
+        radial-gradient(ellipse 80% 50% at 0% 0%, rgba(201,162,39,0.06), transparent 55%),
+        linear-gradient(180deg, #161912 0%, var(--ink) 40%);
+    }
+
+    a { color: inherit; text-decoration: none; }
+    button {
+      font: inherit;
+      color: inherit;
+      background: none;
+      border: none;
+      cursor: pointer;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: var(--nav-w) 1fr;
+      min-height: 100vh;
+    }
+
+    /* —— Nav —— */
+    .nav {
+      border-right: 1px solid var(--line);
+      background: rgba(18,20,15,0.92);
+      padding: 1.5rem 0.9rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+    }
+
+    .brand {
+      padding: 0 0.55rem;
+    }
+    .brand-mark {
+      font-family: Literata, Georgia, serif;
+      font-size: 1.35rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .brand-sub {
+      margin-top: 0.2rem;
+      color: var(--mute);
+      font-size: 0.72rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .nav-group { display: flex; flex-direction: column; gap: 0.2rem; }
+    .nav-label {
+      padding: 0 0.55rem 0.45rem;
+      color: var(--mute);
+      font-size: 0.68rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.55rem 0.65rem;
+      border-radius: var(--radius);
+      color: var(--mute);
+      text-align: left;
+      transition: background 0.15s, color 0.15s;
+    }
+    .nav-item:hover { color: var(--paper); background: var(--panel-2); }
+    .nav-item.active {
+      color: var(--paper);
+      background: var(--panel-2);
+      box-shadow: inset 2px 0 0 var(--brass);
+    }
+    .nav-item .count {
+      font-size: 0.7rem;
+      color: var(--mute);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .nav-foot {
+      margin-top: auto;
+      padding: 0.75rem 0.55rem;
+      border-top: 1px solid var(--line);
+      display: grid;
+      gap: 0.45rem;
+      font-size: 0.78rem;
+      color: var(--mute);
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      width: fit-content;
+      padding: 0.2rem 0.5rem;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      font-size: 0.7rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .pill .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--mute);
+    }
+    .pill.live .dot { background: var(--bad); }
+    .pill.dry .dot { background: var(--brass); }
+    .pill.on .dot { background: var(--good); }
+
+    /* —— Main —— */
+    .main {
+      padding: 1.4rem 1.6rem 2.5rem;
+      max-width: 1280px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: end;
+      gap: 1rem;
+      margin-bottom: 1.4rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--line);
+    }
+    .page-title {
+      font-family: Literata, Georgia, serif;
+      font-size: 1.7rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .page-desc { color: var(--mute); margin-top: 0.25rem; font-size: 0.9rem; }
+    .top-meta {
+      text-align: right;
+      color: var(--mute);
+      font-size: 0.78rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .view { display: none; }
+    .view.active { display: block; }
+
+    .grid-metrics {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
+    .metric {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 0.9rem 1rem;
+    }
+    .metric .k {
+      color: var(--mute);
+      font-size: 0.7rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .metric .v {
+      margin-top: 0.35rem;
+      font-size: 1.45rem;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.02em;
+    }
+    .v.pos { color: var(--good); }
+    .v.neg { color: var(--bad); }
+
+    .split {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 0.75rem;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .panel-h {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--line);
+    }
+    .panel-h h2 {
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--mute);
+    }
+    .panel-b { padding: 0.35rem 0; max-height: 420px; overflow: auto; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-variant-numeric: tabular-nums;
+    }
+    th, td {
+      padding: 0.55rem 1rem;
+      text-align: left;
+      border-bottom: 1px solid rgba(48,54,40,0.7);
+      font-size: 0.82rem;
+    }
+    th {
+      color: var(--mute);
+      font-weight: 500;
+      font-size: 0.68rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    tr:last-child td { border-bottom: none; }
+    .mono { font-family: "Work Sans", sans-serif; }
+    .muted { color: var(--mute); }
+    .truncate {
+      max-width: 280px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* —— Bots —— */
+    .bots-hero {
+      display: grid;
+      grid-template-columns: 1.4fr 1fr;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+    }
+    .bots-total {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.35rem;
+      position: relative;
+      overflow: hidden;
+    }
+    .bots-total::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 3px;
+      background: var(--brass);
+    }
+    .bots-total .k {
+      color: var(--mute);
+      font-size: 0.72rem;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+    }
+    .bots-total .v {
+      font-family: Literata, Georgia, serif;
+      font-size: 2.4rem;
+      font-weight: 700;
+      margin-top: 0.2rem;
+      letter-spacing: -0.03em;
+    }
+    .bots-total .hint { margin-top: 0.35rem; color: var(--mute); font-size: 0.82rem; }
+
+    .bot-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0.75rem;
+    }
+    .bot-card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 1rem 1.05rem 1.1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+      min-height: 210px;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .bot-card:hover { border-color: #4a533c; background: var(--panel-2); }
+    .bot-card.selected { border-color: var(--brass); }
+    .bot-card-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      gap: 0.5rem;
+    }
+    .bot-name {
+      font-family: Literata, Georgia, serif;
+      font-size: 1.15rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .bot-tagline { color: var(--mute); font-size: 0.8rem; margin-top: 0.2rem; }
+    .status-chip {
+      font-size: 0.65rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      padding: 0.2rem 0.4rem;
+      border: 1px solid var(--line);
+      border-radius: 3px;
+      color: var(--mute);
+      white-space: nowrap;
+    }
+    .status-chip.running { color: var(--good); border-color: rgba(122,168,122,0.4); }
+    .status-chip.paused, .status-chip.idle { color: var(--mute); }
+    .bot-metrics {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.55rem;
+      margin-top: auto;
+    }
+    .bot-metrics .cell {
+      padding: 0.45rem 0.5rem;
+      background: rgba(0,0,0,0.18);
+      border-radius: 4px;
+    }
+    .bot-metrics .cell .k {
+      font-size: 0.62rem;
+      color: var(--mute);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .bot-metrics .cell .v {
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin-top: 0.1rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .bot-detail {
+      margin-top: 0.75rem;
+      display: none;
+    }
+    .bot-detail.open { display: block; }
+
+    .empty {
+      padding: 2rem 1rem;
+      text-align: center;
+      color: var(--mute);
+      font-size: 0.85rem;
+    }
+
+    .seg-bar {
+      display: flex;
+      gap: 0.35rem;
+      flex-wrap: wrap;
+      margin-bottom: 0.75rem;
+    }
+    .seg {
+      padding: 0.35rem 0.7rem;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      color: var(--mute);
+      font-size: 0.78rem;
+    }
+    .seg.active {
+      color: var(--paper);
+      border-color: var(--brass);
+      background: rgba(201,162,39,0.08);
+    }
+
+    @media (max-width: 980px) {
+      .shell { grid-template-columns: 1fr; }
+      .nav {
+        position: relative;
+        height: auto;
+        border-right: none;
+        border-bottom: 1px solid var(--line);
+      }
+      .nav-group { flex-direction: row; flex-wrap: wrap; }
+      .grid-metrics, .bot-grid, .bots-hero, .split { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 640px) {
+      .grid-metrics, .bot-grid, .bots-hero, .split { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="nav">
+      <div class="brand">
+        <div class="brand-mark">Arb Desk</div>
+        <div class="brand-sub">Prediction markets</div>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-label">Browse</div>
+        <button class="nav-item active" data-view="overview">Overview</button>
+        <button class="nav-item" data-view="bots">
+          Bots <span class="count" id="nav-bots-count">4</span>
+        </button>
+        <button class="nav-item" data-view="markets">
+          Markets <span class="count" id="nav-markets-count">0</span>
+        </button>
+        <button class="nav-item" data-view="signals">
+          Signals <span class="count" id="nav-signals-count">0</span>
+        </button>
+        <button class="nav-item" data-view="cross">Cross</button>
+        <button class="nav-item" data-view="risk">Risk</button>
+      </div>
+
+      <div class="nav-foot">
+        <span class="pill dry" id="mode-pill"><span class="dot"></span><span id="mode-text">dry run</span></span>
+        <span class="pill" id="run-pill"><span class="dot"></span><span id="run-text">offline</span></span>
+        <div id="uptime-text">uptime —</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <h1 class="page-title" id="page-title">Overview</h1>
+          <p class="page-desc" id="page-desc">Live desk snapshot across venues and strategies.</p>
+        </div>
+        <div class="top-meta">
+          <div id="clock">—</div>
+          <div id="last-update">waiting for feed</div>
+        </div>
+      </div>
+
+      <!-- OVERVIEW -->
+      <section class="view active" id="view-overview">
+        <div class="grid-metrics">
+          <div class="metric"><div class="k">Total P/L</div><div class="v" id="m-pnl">$0.00</div></div>
+          <div class="metric"><div class="k">Bot P/L</div><div class="v" id="m-bot-pnl">$0.00</div></div>
+          <div class="metric"><div class="k">Markets</div><div class="v" id="m-markets">0</div></div>
+          <div class="metric"><div class="k">Open orders</div><div class="v" id="m-orders">0</div></div>
+        </div>
+        <div class="split">
+          <div class="panel">
+            <div class="panel-h"><h2>Recent opportunities</h2></div>
+            <div class="panel-b">
+              <table>
+                <thead><tr><th>Strategy</th><th>Market</th><th>Edge</th><th>When</th></tr></thead>
+                <tbody id="ov-opps"><tr><td colspan="4" class="empty">No opportunities yet</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-h"><h2>Strategy mix</h2></div>
+            <div class="panel-b">
+              <table>
+                <thead><tr><th>Bot</th><th>P/L</th><th>Trades</th><th>Status</th></tr></thead>
+                <tbody id="ov-bots"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- BOTS -->
+      <section class="view" id="view-bots">
+        <div class="bots-hero">
+          <div class="bots-total">
+            <div class="k">Combined strategy P/L</div>
+            <div class="v" id="bots-total-pnl">$0.00</div>
+            <div class="hint">Segmented by strategy — each bot keeps its own ledger.</div>
+          </div>
+          <div class="grid-metrics" style="margin:0; grid-template-columns:1fr 1fr;">
+            <div class="metric"><div class="k">Active bots</div><div class="v" id="bots-active">0</div></div>
+            <div class="metric"><div class="k">Total volume</div><div class="v" id="bots-volume">$0</div></div>
+          </div>
+        </div>
+
+        <div class="bot-grid" id="bot-grid"></div>
+
+        <div class="bot-detail" id="bot-detail">
+          <div class="panel-h" style="padding-left:0; border:none;">
+            <h2 id="bot-detail-title">Bot trades</h2>
+            <div class="seg-bar" id="bot-seg" style="margin:0;"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-b">
+              <table>
+                <thead><tr><th>Side</th><th>Market</th><th>Price</th><th>Size</th><th>P/L</th><th>When</th></tr></thead>
+                <tbody id="bot-trades"><tr><td colspan="6" class="empty">Select a bot</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- MARKETS -->
+      <section class="view" id="view-markets">
+        <div class="panel">
+          <div class="panel-h"><h2>Live books</h2><span class="muted" id="markets-count-label">0</span></div>
+          <div class="panel-b">
+            <table>
+              <thead>
+                <tr>
+                  <th>Question</th>
+                  <th>YES bid</th>
+                  <th>YES ask</th>
+                  <th>NO bid</th>
+                  <th>NO ask</th>
+                  <th>Sum ask</th>
+                </tr>
+              </thead>
+              <tbody id="markets-body"><tr><td colspan="6" class="empty">Loading markets…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- SIGNALS -->
+      <section class="view" id="view-signals">
+        <div class="seg-bar" id="signal-seg">
+          <button class="seg active" data-filter="all">All</button>
+          <button class="seg" data-filter="bundle_arb">Bundle</button>
+          <button class="seg" data-filter="cross_platform">Cross</button>
+          <button class="seg" data-filter="market_making">MM</button>
+          <button class="seg" data-filter="soccer_draw_bias">Soccer</button>
+        </div>
+        <div class="split">
+          <div class="panel">
+            <div class="panel-h"><h2>Opportunities</h2></div>
+            <div class="panel-b">
+              <table>
+                <thead><tr><th>Type</th><th>Market</th><th>Edge</th><th>Size</th></tr></thead>
+                <tbody id="sig-opps"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-h"><h2>Trades</h2></div>
+            <div class="panel-b">
+              <table>
+                <thead><tr><th>Strategy</th><th>Side</th><th>Price</th><th>P/L</th></tr></thead>
+                <tbody id="sig-trades"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- CROSS -->
+      <section class="view" id="view-cross">
+        <div class="grid-metrics">
+          <div class="metric"><div class="k">Polymarket</div><div class="v" id="x-poly">0</div></div>
+          <div class="metric"><div class="k">Kalshi</div><div class="v" id="x-kalshi">0</div></div>
+          <div class="metric"><div class="k">Matched</div><div class="v" id="x-matched">0</div></div>
+          <div class="metric"><div class="k">Match status</div><div class="v" id="x-status" style="font-size:1rem;">—</div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-h"><h2>Matched pairs</h2></div>
+          <div class="panel-b">
+            <table>
+              <thead><tr><th>Polymarket</th><th>Kalshi</th><th>Score</th><th>Category</th></tr></thead>
+              <tbody id="x-pairs"><tr><td colspan="4" class="empty">Matching not started</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- RISK -->
+      <section class="view" id="view-risk">
+        <div class="grid-metrics">
+          <div class="metric"><div class="k">Exposure</div><div class="v" id="r-exposure">$0</div></div>
+          <div class="metric"><div class="k">Daily P/L</div><div class="v" id="r-daily">$0</div></div>
+          <div class="metric"><div class="k">Kill switch</div><div class="v" id="r-kill" style="font-size:1rem;">off</div></div>
+          <div class="metric"><div class="k">Within limits</div><div class="v" id="r-limits" style="font-size:1rem;">—</div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-h"><h2>Risk snapshot</h2></div>
+          <div class="panel-b">
+            <pre id="r-json" class="muted" style="padding:1rem; white-space:pre-wrap; font-size:0.8rem;">No risk data yet</pre>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const META = {
+      overview: ["Overview", "Live desk snapshot across venues and strategies."],
+      bots: ["Bots", "Strategies as separate bots — each with its own P/L ledger."],
+      markets: ["Markets", "Books currently streaming into the desk."],
+      signals: ["Signals", "Opportunities and fills, filterable by strategy."],
+      cross: ["Cross", "Polymarket ↔ Kalshi matching and gaps."],
+      risk: ["Risk", "Exposure, daily loss, and kill switch."],
+    };
+
+    let state = null;
+    let selectedBot = "bundle_arb";
+    let signalFilter = "all";
+
+    const $ = (id) => document.getElementById(id);
+    const money = (n) => {
+      const v = Number(n) || 0;
+      const s = (v < 0 ? "-" : "") + "$" + Math.abs(v).toFixed(2);
+      return s;
+    };
+    const clsPnL = (n) => (Number(n) >= 0 ? "pos" : "neg");
+    const ago = (iso) => {
+      if (!iso) return "—";
+      const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+      if (s < 60) return Math.floor(s) + "s";
+      if (s < 3600) return Math.floor(s / 60) + "m";
+      return Math.floor(s / 3600) + "h";
+    };
+    const fmtUptime = (sec) => {
+      sec = Math.floor(Number(sec) || 0);
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = sec % 60;
+      return h + "h " + m + "m " + s + "s";
+    };
+
+    document.querySelectorAll(".nav-item").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const view = btn.dataset.view;
+        document.querySelectorAll(".nav-item").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
+        $("view-" + view).classList.add("active");
+        $("page-title").textContent = META[view][0];
+        $("page-desc").textContent = META[view][1];
+      });
+    });
+
+    document.getElementById("signal-seg").addEventListener("click", (e) => {
+      const t = e.target.closest(".seg");
+      if (!t) return;
+      signalFilter = t.dataset.filter;
+      document.querySelectorAll("#signal-seg .seg").forEach((s) => s.classList.toggle("active", s === t));
+      if (state) renderSignals(state);
+    });
+
+    function render(data) {
+      state = data;
+      const pnl = data.portfolio?.pnl?.total_pnl ?? data.portfolio?.total_pnl ?? 0;
+      const botPnl = data.bots_total_pnl ?? 0;
+      const markets = Object.keys(data.markets || {}).length;
+      const orders = (data.orders || []).length;
+
+      const mPnl = $("m-pnl");
+      mPnl.textContent = money(pnl);
+      mPnl.className = "v " + clsPnL(pnl);
+      const mBot = $("m-bot-pnl");
+      mBot.textContent = money(botPnl);
+      mBot.className = "v " + clsPnL(botPnl);
+      $("m-markets").textContent = markets;
+      $("m-orders").textContent = orders;
+
+      $("nav-markets-count").textContent = markets;
+      $("nav-signals-count").textContent = (data.opportunities || []).length;
+      $("nav-bots-count").textContent = Object.keys(data.bots || {}).length;
+
+      const mode = (data.mode || "dry_run").toLowerCase();
+      const modePill = $("mode-pill");
+      modePill.className = "pill " + (mode === "live" ? "live" : "dry");
+      $("mode-text").textContent = mode === "live" ? "live" : "dry run";
+
+      const runPill = $("run-pill");
+      runPill.className = "pill " + (data.is_running ? "on" : "");
+      $("run-text").textContent = data.is_running ? "running" : "offline";
+      $("uptime-text").textContent = "uptime " + fmtUptime(data.uptime_seconds);
+      $("last-update").textContent = "updated " + ago(data.last_update) + " ago";
+
+      renderOverview(data);
+      renderBots(data);
+      renderMarkets(data);
+      renderSignals(data);
+      renderCross(data);
+      renderRisk(data);
+    }
+
+    function renderOverview(data) {
+      const opps = (data.opportunities || []).slice().reverse().slice(0, 12);
+      $("ov-opps").innerHTML = opps.length
+        ? opps.map((o) => `<tr>
+            <td>${o.strategy || o.type || "—"}</td>
+            <td class="truncate" title="${o.market_id || ""}">${o.market_id || "—"}</td>
+            <td class="${clsPnL(o.edge)}">${((o.edge || 0) * 100).toFixed(2)}%</td>
+            <td class="muted">${ago(o.timestamp)}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="4" class="empty">No opportunities yet</td></tr>`;
+
+      const bots = data.bots_list || Object.values(data.bots || {});
+      $("ov-bots").innerHTML = bots.map((b) => `<tr>
+          <td>${b.name}</td>
+          <td class="${clsPnL(b.realized_pnl)}">${money(b.realized_pnl)}</td>
+          <td>${b.trades}</td>
+          <td class="muted">${b.status}</td>
+        </tr>`).join("");
+    }
+
+    function renderBots(data) {
+      const bots = data.bots_list || Object.values(data.bots || {});
+      const total = bots.reduce((a, b) => a + (b.realized_pnl || 0), 0);
+      const vol = bots.reduce((a, b) => a + (b.volume || 0), 0);
+      const active = bots.filter((b) => b.enabled && b.status === "running").length;
+
+      const el = $("bots-total-pnl");
+      el.textContent = money(total);
+      el.className = "v " + clsPnL(total);
+      $("bots-active").textContent = active;
+      $("bots-volume").textContent = money(vol);
+
+      $("bot-grid").innerHTML = bots.map((b) => `
+        <article class="bot-card ${selectedBot === b.id ? "selected" : ""}" data-bot="${b.id}">
+          <div class="bot-card-top">
+            <div>
+              <div class="bot-name">${b.name}</div>
+              <div class="bot-tagline">${b.tagline || ""}</div>
+            </div>
+            <span class="status-chip ${b.status}">${b.status}</span>
+          </div>
+          <div class="muted" style="font-size:0.75rem;">${b.venue || ""}</div>
+          <div class="bot-metrics">
+            <div class="cell"><div class="k">P/L</div><div class="v ${clsPnL(b.realized_pnl)}">${money(b.realized_pnl)}</div></div>
+            <div class="cell"><div class="k">Trades</div><div class="v">${b.trades}</div></div>
+            <div class="cell"><div class="k">Volume</div><div class="v">${money(b.volume)}</div></div>
+            <div class="cell"><div class="k">Opps</div><div class="v">${b.opportunities}</div></div>
+          </div>
+        </article>
+      `).join("");
+
+      document.querySelectorAll(".bot-card").forEach((card) => {
+        card.addEventListener("click", () => {
+          selectedBot = card.dataset.bot;
+          renderBots(state);
+          renderBotDetail(state);
+        });
+      });
+
+      $("bot-detail").classList.add("open");
+      renderBotDetail(data);
+    }
+
+    function renderBotDetail(data) {
+      const bots = data.bots || {};
+      const bot = bots[selectedBot];
+      if (!bot) return;
+      $("bot-detail-title").textContent = bot.name + " — trade ledger";
+      $("bot-seg").innerHTML = Object.values(bots).map((b) =>
+        `<button class="seg ${b.id === selectedBot ? "active" : ""}" data-bot="${b.id}">${b.name}</button>`
+      ).join("");
+      $("bot-seg").onclick = (e) => {
+        const t = e.target.closest(".seg");
+        if (!t) return;
+        selectedBot = t.dataset.bot;
+        renderBots(state);
+      };
+
+      const trades = (data.trades || []).filter((t) => (t.strategy || "bundle_arb") === selectedBot).slice().reverse().slice(0, 40);
+      $("bot-trades").innerHTML = trades.length
+        ? trades.map((t) => `<tr>
+            <td>${t.side || "—"}</td>
+            <td class="truncate">${t.market_id || "—"}</td>
+            <td>${Number(t.price || 0).toFixed(3)}</td>
+            <td>${Number(t.size || 0).toFixed(2)}</td>
+            <td class="${clsPnL(t.pnl)}">${money(t.pnl)}</td>
+            <td class="muted">${ago(t.timestamp)}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="6" class="empty">No trades for this bot yet</td></tr>`;
+    }
+
+    function renderMarkets(data) {
+      const rows = Object.values(data.markets || {}).slice(0, 80);
+      $("markets-count-label").textContent = rows.length + " shown";
+      $("markets-body").innerHTML = rows.length
+        ? rows.map((m) => `<tr>
+            <td class="truncate" title="${m.question || m.market_id}">${m.question || m.market_id}</td>
+            <td>${fmtPx(m.best_bid_yes)}</td>
+            <td>${fmtPx(m.best_ask_yes)}</td>
+            <td>${fmtPx(m.best_bid_no)}</td>
+            <td>${fmtPx(m.best_ask_no)}</td>
+            <td>${fmtPx(m.total_ask)}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="6" class="empty">No market books yet</td></tr>`;
+    }
+
+    function fmtPx(v) {
+      return v == null ? "—" : Number(v).toFixed(3);
+    }
+
+    function renderSignals(data) {
+      let opps = data.opportunities || [];
+      let trades = data.trades || [];
+      if (signalFilter !== "all") {
+        opps = opps.filter((o) => (o.strategy || o.type) === signalFilter || normalize(o.type) === signalFilter);
+        trades = trades.filter((t) => (t.strategy || "") === signalFilter);
+      }
+      opps = opps.slice().reverse().slice(0, 30);
+      trades = trades.slice().reverse().slice(0, 30);
+
+      $("sig-opps").innerHTML = opps.length
+        ? opps.map((o) => `<tr>
+            <td>${o.strategy || o.type}</td>
+            <td class="truncate">${o.market_id || ""}</td>
+            <td class="${clsPnL(o.edge)}">${((o.edge || 0) * 100).toFixed(2)}%</td>
+            <td>${o.suggested_size != null ? Number(o.suggested_size).toFixed(1) : "—"}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="4" class="empty">None</td></tr>`;
+
+      $("sig-trades").innerHTML = trades.length
+        ? trades.map((t) => `<tr>
+            <td>${t.strategy || "—"}</td>
+            <td>${t.side || "—"}</td>
+            <td>${Number(t.price || 0).toFixed(3)}</td>
+            <td class="${clsPnL(t.pnl)}">${money(t.pnl)}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="4" class="empty">None</td></tr>`;
+    }
+
+    function normalize(t) {
+      if (!t) return "bundle_arb";
+      const s = String(t).toLowerCase();
+      if (s.includes("soccer") || s.includes("draw_bias")) return "soccer_draw_bias";
+      if (s.includes("bundle")) return "bundle_arb";
+      if (s.includes("cross")) return "cross_platform";
+      if (s.includes("mm")) return "market_making";
+      return t;
+    }
+
+    function renderCross(data) {
+      const x = data.cross_platform || {};
+      $("x-poly").textContent = x.polymarket_markets || 0;
+      $("x-kalshi").textContent = x.kalshi_markets || 0;
+      $("x-matched").textContent = x.matched_pairs || 0;
+      $("x-status").textContent = x.matching_status || "—";
+      const pairs = x.matched_pairs_data || [];
+      $("x-pairs").innerHTML = pairs.length
+        ? pairs.slice(0, 40).map((p) => `<tr>
+            <td class="truncate">${p.poly_question || ""}</td>
+            <td class="truncate">${p.kalshi_title || ""}</td>
+            <td>${((p.similarity || 0) * 100).toFixed(0)}%</td>
+            <td class="muted">${p.category || "—"}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="4" class="empty">No matched pairs yet</td></tr>`;
+    }
+
+    function renderRisk(data) {
+      const r = data.risk || {};
+      $("r-exposure").textContent = money(r.total_exposure ?? r.global_exposure ?? 0);
+      const daily = r.daily_pnl ?? r.daily_loss ?? 0;
+      const d = $("r-daily");
+      d.textContent = money(daily);
+      d.className = "v " + clsPnL(daily);
+      $("r-kill").textContent = r.kill_switch_active ? "ACTIVE" : "off";
+      $("r-limits").textContent = r.within_limits === false ? "breach" : "ok";
+      $("r-json").textContent = Object.keys(r).length ? JSON.stringify(r, null, 2) : "No risk data yet";
+    }
+
+    function connect() {
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      const ws = new WebSocket(proto + "://" + location.host + "/ws");
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === "initial" || msg.type === "update") render(msg.data);
+          else if (msg.type === "opportunity" || msg.type === "activity") {
+            fetch("/api/state").then((r) => r.json()).then(render);
+          }
+        } catch (_) {}
+      };
+      ws.onclose = () => setTimeout(connect, 2000);
+    }
+
+    fetch("/api/state").then((r) => r.json()).then(render).catch(() => {});
+    connect();
+    setInterval(() => {
+      $("clock").textContent = new Date().toLocaleTimeString();
+    }, 1000);
+  </script>
+</body>
+</html>
