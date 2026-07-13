@@ -227,6 +227,18 @@ class TestStateMachine:
         )
         assert self.sm.should_evaluate_orderbook(m) is False
 
+    def test_poll_interval_idle_vs_active(self):
+        idle = self.sm.poll_interval_for([])
+        assert idle >= 600
+        active = self.sm.poll_interval_for(
+            [_match(status=MatchStatus.ACTIVE_WINDOW, current_minute=80)]
+        )
+        assert active == self.cfg.poll_interval_active_sec
+        monitoring = self.sm.poll_interval_for(
+            [_match(status=MatchStatus.MONITORING, current_minute=40)]
+        )
+        assert monitoring == self.cfg.poll_interval_monitoring_sec
+
 
 class TestPriceThreshold:
     """Executor gate logic mirrored via should_evaluate + price compare helpers."""

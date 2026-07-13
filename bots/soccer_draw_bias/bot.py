@@ -57,8 +57,14 @@ class SoccerDrawBiasBot:
                 active_window_end=s.active_window_end,
                 target_max_buy_price=s.target_max_buy_price,
                 risk_unit_usd=s.risk_unit_usd,
+                poll_interval_idle_sec=getattr(s, "poll_interval_idle_sec", 600.0),
                 poll_interval_monitoring_sec=s.poll_interval_monitoring_sec,
+                poll_interval_near_window_sec=getattr(
+                    s, "poll_interval_near_window_sec", 90.0
+                ),
                 poll_interval_active_sec=s.poll_interval_active_sec,
+                near_window_minute=getattr(s, "near_window_minute", 70),
+                markets_first=getattr(s, "markets_first", True),
                 db_path=s.db_path,
                 season=s.season,
             )
@@ -77,6 +83,7 @@ class SoccerDrawBiasBot:
         self.matches: dict[int, MatchRecord] = {}
         self._last_discovery_date: Optional[str] = None
         self._soccer_candidates = []
+        self._near_miss_log: dict[int, float] = {}  # match_id -> last ask logged
 
     def _dash(self, method: str, *args, **kwargs) -> None:
         if self.dashboard is None:
@@ -248,16 +255,28 @@ class SoccerDrawBiasBot:
         logger.info("Soccer Draw Bias Bot stopped")
 
     async def run_discovery(self, force: bool = False) -> None:
-        """Phase 1: map today's fixtures to Polymarket 90-minute markets."""
+        """
+        Markets-first discovery: Polymarket soccer markets, then sports fixtures.
+        Saves API-Football calls and finds any dated fixture that maps to a market.
+        """
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if not force and self._last_discovery_date == today:
             return
 
         assert self.sports and self.poly and self.store
-        logger.info(f"Running daily discovery for {today}")
+        logger.info(f"Running markets-first discovery for {today}")
 
-        # Pull today ± 1 day so timezone edges don't drop fixtures.
-        # Free-tier API-Football only allows a narrow recent date window anyway.
+        # 1) Polymarket first (0 football API calls)
+        self._soccer_candidates = await discover_soccer_markets(
+            self.poly,
+            min_volume=self.draw_config.min_market_volume,
+        )
+        if not self._soccer_candidates:
+            logger.info("No Polymarket soccer candidates — skipping sports pulls")
+            self._last_discovery_date = today
+            return
+
+        # 2) Sports fixtures for today ± 1 day (3 date calls max)
         from datetime import timedelta
 
         base = datetime.now(timezone.utc).date()
@@ -265,26 +284,30 @@ class SoccerDrawBiasBot:
             (base + timedelta(days=delta)).strftime("%Y-%m-%d")
             for delta in (-1, 0, 1)
         ]
+        # Markets-first: do not pre-filter by league — keep anything that maps to Poly
+        league_filter: list[int] = []
+        if not self.draw_config.markets_first:
+            league_filter = list(self.draw_config.league_ids or [])
+
         fixtures = []
         seen_ids: set[int] = set()
         for date_str in dates:
             day_fixtures = await self.sports.get_fixtures_by_date(
                 date_str,
-                league_ids=self.draw_config.league_ids or [],
+                league_ids=league_filter,
                 season=self.draw_config.season,
             )
             for snap in day_fixtures:
                 if snap.match_id not in seen_ids:
                     seen_ids.add(snap.match_id)
                     fixtures.append(snap)
-        logger.info(f"Sports fixtures (dates {dates}): {len(fixtures)}")
-
-        self._soccer_candidates = await discover_soccer_markets(
-            self.poly,
-            min_volume=self.draw_config.min_market_volume,
+        logger.info(
+            f"Sports fixtures (dates {dates}, leagues={'all' if not league_filter else league_filter}): "
+            f"{len(fixtures)}"
         )
 
         mapped = 0
+        preferred = set(self.draw_config.league_ids or [])
         for snap in fixtures:
             if snap.match_id in self.matches:
                 continue
@@ -297,6 +320,13 @@ class SoccerDrawBiasBot:
             )
             if not linked:
                 continue
+
+            # Prefer configured leagues, but still allow others that mapped cleanly
+            if preferred and snap.league_id not in preferred:
+                logger.info(
+                    f"Mapped off-list league={snap.league_id} {snap.league_name}: "
+                    f"{snap.home_team} vs {snap.away_team}"
+                )
 
             rec = MatchRecord(
                 match_id=snap.match_id,
@@ -336,16 +366,40 @@ class SoccerDrawBiasBot:
         self._last_discovery_date = today
         logger.info(f"Discovery complete: {mapped} matches scheduled")
 
+    def _needs_live_poll(self, active: list[MatchRecord]) -> bool:
+        """Skip live API when everything is still far from kickoff."""
+        if not active:
+            return False
+        live_like = {
+            MatchStatus.MONITORING,
+            MatchStatus.ACTIVE_WINDOW,
+            MatchStatus.EXECUTED,
+        }
+        if any(m.status in live_like for m in active):
+            return True
+
+        now = datetime.utcnow()
+        for m in active:
+            if m.status != MatchStatus.SCHEDULED:
+                continue
+            if m.kickoff_utc is None:
+                return True  # unknown kickoff — check live feed
+            # Kickoff within 20 minutes (past or soon)
+            delta = (m.kickoff_utc - now).total_seconds()
+            if delta <= 20 * 60:
+                return True
+        return False
+
     async def _main_loop(self) -> None:
         assert self.sports and self.executor and self.store
         while self._running and not self._shutdown.is_set():
             try:
-                # Roll discovery at 00:00 UTC
                 await self.run_discovery(force=False)
-
                 await self._poll_once()
-
-                interval = self.state_machine.poll_interval_for(list(self.matches.values()))
+                interval = self.state_machine.poll_interval_for(
+                    list(self.matches.values())
+                )
+                logger.debug(f"Soccer poll sleep {interval:.0f}s")
                 try:
                     await asyncio.wait_for(self._shutdown.wait(), timeout=interval)
                 except asyncio.TimeoutError:
@@ -359,8 +413,7 @@ class SoccerDrawBiasBot:
         active = [
             m
             for m in self.matches.values()
-            if m.status
-            not in (MatchStatus.SETTLED, MatchStatus.DISCARDED)
+            if m.status not in (MatchStatus.SETTLED, MatchStatus.DISCARDED)
         ]
         if not active:
             return
@@ -372,25 +425,23 @@ class SoccerDrawBiasBot:
                 f"(failures={self.sports.consecutive_failures})"
             )
 
-        # Batch live pull for configured leagues
         live_by_id: dict[int, object] = {}
-        try:
-            lives = await self.sports.get_live_fixtures(self.draw_config.league_ids)
-            live_by_id = {s.match_id: s for s in lives}
-        except SportsApiError as e:
-            logger.warning(f"Live fixtures poll failed: {e}")
+        if self._needs_live_poll(active):
+            try:
+                lives = await self.sports.get_live_fixtures(self.draw_config.league_ids)
+                live_by_id = {s.match_id: s for s in lives}
+            except SportsApiError as e:
+                logger.warning(f"Live fixtures poll failed: {e}")
+        else:
+            logger.debug("Skipping live fixtures poll (nothing near kickoff)")
 
         for match in active:
             prev_status = match.status
             snap = live_by_id.get(match.match_id)
 
             if snap is None:
-                # Scheduled matches: wait until they appear on the live feed
-                # (avoids burning API-Football free-tier quota on NS polls).
                 if match.status == MatchStatus.SCHEDULED:
                     continue
-                # Monitoring / active / executed need an explicit fetch if
-                # they dropped off the live endpoint (e.g. just went FT).
                 try:
                     snap = await self.sports.get_fixture(match.match_id)
                 except SportsApiError as e:
@@ -399,14 +450,13 @@ class SoccerDrawBiasBot:
             if snap is None:
                 continue
 
-            # Enrich cards/VAR only near / inside the trade window
-            near_window = snap.elapsed >= max(0, self.draw_config.active_window_start - 5)
+            near_window = snap.elapsed >= max(
+                0, self.draw_config.active_window_start - 5
+            )
             if match.status in (
                 MatchStatus.ACTIVE_WINDOW,
                 MatchStatus.EXECUTED,
-            ) or (
-                match.status == MatchStatus.MONITORING and near_window
-            ):
+            ) or (match.status == MatchStatus.MONITORING and near_window):
                 snap = await self.sports.enrich_with_events(snap, match.favorite_team)
 
             self.state_machine.apply_live_update(
@@ -433,6 +483,8 @@ class SoccerDrawBiasBot:
                 and not match.var_in_progress
             ):
                 result = await self.executor.maybe_execute(match)
+                if result.reason == "price_above_threshold" and result.price is not None:
+                    self._log_near_miss(match, result.price)
                 if result.success:
                     self.store.upsert_trade_from_match(match)
                     self.store.log_transition(
@@ -448,7 +500,6 @@ class SoccerDrawBiasBot:
             if match.status == MatchStatus.SETTLED:
                 self.store.upsert_trade_from_match(match)
 
-            # If executed and FT arrived via apply_live_update
             if match.status == MatchStatus.EXECUTED and is_full_time(snap.status_short):
                 prev = match.status
                 self.state_machine.settle(match, snap)
@@ -457,3 +508,15 @@ class SoccerDrawBiasBot:
                     self._notify_settled(match)
 
             self.store.upsert_match(match)
+
+    def _log_near_miss(self, match: MatchRecord, ask: float) -> None:
+        """INFO log when tied in-window but ask is still above target."""
+        last = self._near_miss_log.get(match.match_id)
+        if last is not None and abs(last - ask) < 0.01:
+            return
+        self._near_miss_log[match.match_id] = ask
+        logger.info(
+            f"NEAR MISS match={match.match_id} {match.home_team} vs {match.away_team} "
+            f"@ {match.current_minute}' score={match.current_score} "
+            f"ask={ask:.3f} > max={self.draw_config.target_max_buy_price:.3f}"
+        )

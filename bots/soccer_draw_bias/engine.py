@@ -26,17 +26,22 @@ class DrawBiasConfig:
 
     enabled: bool = True
     league_ids: list[int] | None = None
-    min_prematch_favorite_prob: float = 0.55
-    min_market_volume: float = 10000.0
+    min_prematch_favorite_prob: float = 0.52
+    min_market_volume: float = 5000.0
     min_match_similarity: float = 0.72
     active_window_start: int = 75
     active_window_end: int = 88
-    target_max_buy_price: float = 0.15
+    target_max_buy_price: float = 0.20
     risk_unit_usd: float = 15.0
-    poll_interval_monitoring_sec: float = 180.0
-    poll_interval_active_sec: float = 60.0
+    poll_interval_idle_sec: float = 600.0  # only SCHEDULED / empty universe
+    poll_interval_monitoring_sec: float = 300.0  # live but before ~70'
+    poll_interval_near_window_sec: float = 90.0  # monitoring >= 70'
+    poll_interval_active_sec: float = 60.0  # ACTIVE_WINDOW / EXECUTED
+    near_window_minute: int = 70
     db_path: str = "data/soccer_draw_bias.db"
     season: int | None = None
+    # If true, date discovery keeps any league that maps to Polymarket (more games)
+    markets_first: bool = True
 
     def __post_init__(self) -> None:
         if self.league_ids is None:
@@ -239,20 +244,22 @@ class MatchStateMachine:
         return match
 
     def poll_interval_for(self, matches: list[MatchRecord]) -> float:
-        """Choose loop sleep based on hottest match state."""
-        active_like = {
-            MatchStatus.ACTIVE_WINDOW,
-            MatchStatus.EXECUTED,
-        }
-        if any(m.status in active_like for m in matches):
-            return self.config.poll_interval_active_sec
-        if any(m.status == MatchStatus.MONITORING for m in matches):
-            # Spec: <75' every 3 min; once any hit 75 gate we already move to active
-            if any(
-                m.status == MatchStatus.MONITORING
-                and m.current_minute >= self.config.active_window_start
-                for m in matches
-            ):
-                return self.config.poll_interval_active_sec
-            return self.config.poll_interval_monitoring_sec
-        return self.config.poll_interval_monitoring_sec
+        """
+        Quota-safe sleep: idle when nothing live, faster only near/inside window.
+        """
+        cfg = self.config
+        if not matches:
+            return cfg.poll_interval_idle_sec
+
+        hot = {MatchStatus.ACTIVE_WINDOW, MatchStatus.EXECUTED}
+        if any(m.status in hot for m in matches):
+            return cfg.poll_interval_active_sec
+
+        monitoring = [m for m in matches if m.status == MatchStatus.MONITORING]
+        if monitoring:
+            if any(m.current_minute >= cfg.near_window_minute for m in monitoring):
+                return cfg.poll_interval_near_window_sec
+            return cfg.poll_interval_monitoring_sec
+
+        # Only SCHEDULED left
+        return cfg.poll_interval_idle_sec

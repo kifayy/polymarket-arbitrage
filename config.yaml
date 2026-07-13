@@ -127,17 +127,22 @@ monitoring:
 # 90-minute draw-bias soccer strategy (run via: python run_soccer_draw_bias.py)
 soccer_draw_bias:
   enabled: true
-  # API-Football league IDs: EPL, UCL, La Liga, Serie A, Bundesliga, Ligue 1, MLS, World Cup, UEL
+  # Preferred leagues (used for live polls). Discovery is markets-first.
   league_ids: [39, 2, 140, 135, 78, 61, 253, 1, 3]
-  min_prematch_favorite_prob: 0.55
-  min_market_volume: 10000
+  min_prematch_favorite_prob: 0.52
+  min_market_volume: 5000
   min_match_similarity: 0.72
   active_window_start: 75
   active_window_end: 88
-  target_max_buy_price: 0.15
+  target_max_buy_price: 0.20
   risk_unit_usd: 15.0
-  poll_interval_monitoring_sec: 180
-  poll_interval_active_sec: 60
+  # Quota-safe polling (API-Football free ~100 req/day)
+  poll_interval_idle_sec: 600          # only scheduled / nothing live
+  poll_interval_monitoring_sec: 300    # live, before ~70'
+  poll_interval_near_window_sec: 90    # monitoring >= 70'
+  poll_interval_active_sec: 60         # active window / executed
+  near_window_minute: 70
+  markets_first: true                  # Polymarket markets drive matching
   db_path: "data/soccer_draw_bias.db"
   # Optional season override (API-Football year). Leave unset — bot uses date-only
   # discovery (works on free tier). Paid plans can set e.g. season: 2025

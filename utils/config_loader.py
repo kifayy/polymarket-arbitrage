@@ -47,15 +47,19 @@ class SoccerDrawBiasConfig:
     """90-minute draw-bias soccer strategy configuration."""
     enabled: bool = True
     league_ids: list[int] = field(default_factory=lambda: [39, 2, 140, 135, 78, 61, 253, 1, 3])
-    min_prematch_favorite_prob: float = 0.55
-    min_market_volume: float = 10000.0
+    min_prematch_favorite_prob: float = 0.52
+    min_market_volume: float = 5000.0
     min_match_similarity: float = 0.72
     active_window_start: int = 75
     active_window_end: int = 88
-    target_max_buy_price: float = 0.15
+    target_max_buy_price: float = 0.20
     risk_unit_usd: float = 15.0
-    poll_interval_monitoring_sec: float = 180.0
+    poll_interval_idle_sec: float = 600.0
+    poll_interval_monitoring_sec: float = 300.0
+    poll_interval_near_window_sec: float = 90.0
     poll_interval_active_sec: float = 60.0
+    near_window_minute: int = 70
+    markets_first: bool = True
     db_path: str = "data/soccer_draw_bias.db"
     season: Optional[int] = None
 

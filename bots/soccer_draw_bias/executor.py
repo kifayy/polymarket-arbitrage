@@ -74,7 +74,11 @@ class DrawBiasExecutor:
                 f"Match {match.match_id}: best ask {best_ask:.3f} > "
                 f"{self.config.target_max_buy_price:.3f} — wait"
             )
-            return ExecutionResult(success=False, reason="price_above_threshold")
+            return ExecutionResult(
+                success=False,
+                price=float(best_ask),
+                reason="price_above_threshold",
+            )
 
         # Size: risk_unit / price (e.g. $15 / 0.15 = 100 shares)
         price = float(best_ask)
