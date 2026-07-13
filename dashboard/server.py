@@ -8,17 +8,26 @@ FastAPI-based web server for the trading dashboard.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
+import os
+import secrets
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
+from fastapi.security import HTTPBasic
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 
 logger = logging.getLogger(__name__)
+
+# Re-export auth helpers used below — STRATEGY_ALIASES etc. continue after this block
 
 
 STRATEGY_ALIASES = {
@@ -337,6 +346,130 @@ class DashboardState:
 
 dashboard_state = DashboardState()
 
+SESSION_COOKIE = "arb_desk_session"
+_http_basic = HTTPBasic(auto_error=False)
+
+
+def _dashboard_user() -> str:
+    return os.environ.get("DASHBOARD_USER", "admin").strip() or "admin"
+
+
+def _dashboard_password() -> str:
+    return (os.environ.get("DASHBOARD_PASSWORD") or "").strip()
+
+
+def auth_enabled() -> bool:
+    return bool(_dashboard_password())
+
+
+def _session_token() -> str:
+    """Stable session cookie value derived from the dashboard password."""
+    pw = _dashboard_password()
+    return hmac.new(pw.encode("utf-8"), b"arb-desk-v1", hashlib.sha256).hexdigest()
+
+
+def _creds_ok(username: str, password: str) -> bool:
+    if not auth_enabled():
+        return True
+    user_ok = secrets.compare_digest(username, _dashboard_user())
+    pass_ok = secrets.compare_digest(password, _dashboard_password())
+    return user_ok and pass_ok
+
+
+def _cookie_ok(request: Request) -> bool:
+    if not auth_enabled():
+        return True
+    token = request.cookies.get(SESSION_COOKIE, "")
+    return bool(token) and secrets.compare_digest(token, _session_token())
+
+
+def _unauthorized() -> Response:
+    return Response(
+        content="Authentication required",
+        status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="Arb Desk"'},
+        media_type="text/plain",
+    )
+
+
+class DashboardAuthMiddleware(BaseHTTPMiddleware):
+    """HTTP Basic Auth (+ session cookie) when DASHBOARD_PASSWORD is set."""
+
+    async def dispatch(self, request: Request, call_next):
+        # WebSocket upgrade is handled in the WS endpoint itself
+        if request.scope.get("type") == "websocket":
+            return await call_next(request)
+
+        if not auth_enabled():
+            # Fail closed on Railway if someone forgot to set a password
+            if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"):
+                return Response(
+                    content=(
+                        "DASHBOARD_PASSWORD is not set. "
+                        "Add it in Railway Variables to lock Arb Desk."
+                    ),
+                    status_code=503,
+                    media_type="text/plain",
+                )
+            return await call_next(request)
+
+        if _cookie_ok(request):
+            return await call_next(request)
+
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Basic "):
+            import base64
+
+            try:
+                raw = base64.b64decode(auth.split(" ", 1)[1]).decode("utf-8")
+                username, _, password = raw.partition(":")
+            except Exception:
+                return _unauthorized()
+            if _creds_ok(username, password):
+                response = await call_next(request)
+                response.set_cookie(
+                    SESSION_COOKIE,
+                    _session_token(),
+                    httponly=True,
+                    secure=request.url.scheme == "https",
+                    samesite="lax",
+                    max_age=60 * 60 * 24 * 7,
+                )
+                return response
+
+        return _unauthorized()
+
+
+async def _ws_authorized(websocket: WebSocket) -> bool:
+    if not auth_enabled():
+        if os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"):
+            return False
+        return True
+
+    # Cookie from prior Basic Auth page load
+    token = websocket.cookies.get(SESSION_COOKIE, "")
+    if token and secrets.compare_digest(token, _session_token()):
+        return True
+
+    # Query token (password) — fallback
+    q = websocket.query_params.get("token") or websocket.query_params.get("password")
+    if q and secrets.compare_digest(q, _dashboard_password()):
+        return True
+
+    # Basic header if present
+    auth = websocket.headers.get("authorization", "")
+    if auth.startswith("Basic "):
+        import base64
+
+        try:
+            raw = base64.b64decode(auth.split(" ", 1)[1]).decode("utf-8")
+            username, _, password = raw.partition(":")
+            if _creds_ok(username, password):
+                return True
+        except Exception:
+            pass
+    return False
+
 
 def create_app() -> FastAPI:
     app = FastAPI(
@@ -344,6 +477,14 @@ def create_app() -> FastAPI:
         description="Strategy desk for Polymarket / Kalshi bots",
         version="2.0.0",
     )
+    app.add_middleware(DashboardAuthMiddleware)
+
+    if auth_enabled():
+        logger.info("Arb Desk auth ENABLED (HTTP Basic + session cookie)")
+    elif os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"):
+        logger.error("Arb Desk auth MISSING — set DASHBOARD_PASSWORD on Railway")
+    else:
+        logger.warning("Arb Desk auth DISABLED — set DASHBOARD_PASSWORD to lock the UI")
 
     static_dir = Path(__file__).parent / "static"
     static_dir.mkdir(exist_ok=True)
@@ -392,6 +533,10 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
+        if not await _ws_authorized(websocket):
+            await websocket.close(code=4401)
+            return
+
         await websocket.accept()
         dashboard_state._connections.append(websocket)
         try:
